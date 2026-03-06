@@ -8,11 +8,8 @@
 
 import 'package:flutter/material.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
-import 'package:url_launcher/url_launcher.dart';
 import '../services/auth_service.dart';
 import '../services/backend_service.dart';
-import '../services/drive_service.dart';
-import '../services/sheets_service.dart';
 import '../services/storage_config_service.dart';
 import '../services/sync_engine.dart';
 import '../services/image_service.dart';
@@ -54,15 +51,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _backendHealthy = healthy;
         _isLoading = false;
       });
-    }
-  }
-
-  Future<void> _openUrl(String url) async {
-    final uri = Uri.parse(url);
-    if (await canLaunchUrl(uri)) {
-      // Use inAppBrowserView (Chrome Custom Tab) to respect ?authuser=
-      // and avoid the native app account chooser dialog.
-      await launchUrl(uri, mode: LaunchMode.inAppBrowserView);
     }
   }
 
@@ -335,11 +323,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               icon: Icons.folder,
                               label: 'תיקיית Drive',
                               value: folderName ?? 'לא הוגדרה',
-                              onOpen: () async {
-                                final link = await DriveService.instance
-                                    .getRootFolderLink();
-                                if (link != null) _openUrl(link);
-                              },
                               onChangeTap: _changeFolder,
                               changeLabel: 'שינוי תיקייה',
                             ),
@@ -350,11 +333,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               icon: Icons.table_chart,
                               label: 'גיליון Sheets',
                               value: sheetName ?? 'לא הוגדר',
-                              onOpen: () {
-                                final link = SheetsService.instance
-                                    .getSpreadsheetLink();
-                                if (link != null) _openUrl(link);
-                              },
                               onChangeTap: _changeSpreadsheet,
                               changeLabel: 'שינוי גיליון',
                             ),
@@ -471,7 +449,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required IconData icon,
     required String label,
     required String value,
-    required VoidCallback onOpen,
     required VoidCallback onChangeTap,
     required String changeLabel,
   }) {
@@ -498,30 +475,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ),
         const SizedBox(height: 8),
-        Row(
-          children: [
-            TextButton.icon(
-              onPressed: onOpen,
-              icon: const Icon(Icons.open_in_new, size: 16),
-              label: const Text('פתח'),
-              style: TextButton.styleFrom(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                textStyle: const TextStyle(fontSize: 13),
-              ),
-            ),
-            const SizedBox(width: 8),
-            TextButton.icon(
-              onPressed: onChangeTap,
-              icon: const Icon(Icons.edit, size: 16),
-              label: Text(changeLabel),
-              style: TextButton.styleFrom(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                textStyle: const TextStyle(fontSize: 13),
-              ),
-            ),
-          ],
+        TextButton.icon(
+          onPressed: onChangeTap,
+          icon: const Icon(Icons.edit, size: 16),
+          label: Text(changeLabel),
+          style: TextButton.styleFrom(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            textStyle: const TextStyle(fontSize: 13),
+          ),
         ),
       ],
     );

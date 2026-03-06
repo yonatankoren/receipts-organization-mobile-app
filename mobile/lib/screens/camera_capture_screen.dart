@@ -11,7 +11,9 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../providers/app_state.dart';
+import '../services/drive_service.dart';
 import '../services/sync_engine.dart';
 import '../widgets/sync_status_indicator.dart';
 import 'review_and_fix_screen.dart';
@@ -43,6 +45,10 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
     _wasOnline = SyncEngine.instance.isOnline;
     SyncEngine.instance.addListener(_onConnectivityChanged);
     _initCamera();
+    // Load expenses so the badge count is available
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<AppState>().loadExpenses();
+    });
   }
 
   @override
@@ -252,6 +258,16 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
     _controller?.setFlashMode(_flashMode);
   }
 
+  Future<void> _openDriveFolder() async {
+    final link = await DriveService.instance.getRootFolderLink();
+    if (link != null) {
+      final uri = Uri.parse(link);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.inAppBrowserView);
+      }
+    }
+  }
+
   IconData get _flashIcon {
     switch (_flashMode) {
       case FlashMode.auto:
@@ -281,6 +297,8 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
   @override
   Widget build(BuildContext context) {
     final isOnline = SyncEngine.instance.isOnline;
+    final appState = context.watch<AppState>();
+    final pendingExpenses = appState.expenses.length;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -371,14 +389,14 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
             ),
           ),
 
-          // Bottom bar: gallery + expenses + capture + receipts
+          // Bottom bar: gallery + expenses + capture + receipts + drive
           Positioned(
             bottom: 0,
             left: 0,
             right: 0,
             child: SafeArea(
               child: Padding(
-                padding: const EdgeInsets.only(bottom: 24, left: 16, right: 16),
+                padding: const EdgeInsets.only(bottom: 24, left: 12, right: 12),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
@@ -390,16 +408,23 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
                       disabled: !isOnline,
                     ),
 
-                    // Pending expenses
+                    // Pending expenses (with badge)
                     _buildBottomButton(
                       icon: Icons.pending_actions,
-                      label: 'הוצאות',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const ExpensesListScreen(),
-                        ),
-                      ),
+                      label: 'ממתינות',
+                      badgeCount: pendingExpenses,
+                      onTap: () async {
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const ExpensesListScreen(),
+                          ),
+                        );
+                        // Reload expenses when returning so badge updates
+                        if (mounted) {
+                          context.read<AppState>().loadExpenses();
+                        }
+                      },
                     ),
 
                     // Capture button (disabled when offline)
@@ -452,6 +477,14 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
                         ),
                       ),
                     ),
+
+                    // Drive folder (disabled when offline)
+                    _buildBottomButton(
+                      icon: Icons.folder_open,
+                      label: 'Drive',
+                      onTap: isOnline ? _openDriveFolder : null,
+                      disabled: !isOnline,
+                    ),
                   ],
                 ),
               ),
@@ -497,6 +530,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
     required String label,
     VoidCallback? onTap,
     bool disabled = false,
+    int badgeCount = 0,
   }) {
     return GestureDetector(
       onTap: disabled ? null : onTap,
@@ -505,14 +539,50 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 52,
-              height: 52,
-              decoration: BoxDecoration(
-                color: Colors.black38,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Icon(icon, color: Colors.white, size: 26),
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Container(
+                  width: 52,
+                  height: 52,
+                  decoration: BoxDecoration(
+                    color: Colors.black38,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Icon(icon, color: Colors.white, size: 26),
+                ),
+                if (badgeCount > 0)
+                  Positioned(
+                    top: -5,
+                    left: -5,
+                    child: Container(
+                      constraints: const BoxConstraints(
+                        minWidth: 20,
+                        minHeight: 20,
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade600,
+                        shape: badgeCount > 9
+                            ? BoxShape.rectangle
+                            : BoxShape.circle,
+                        borderRadius: badgeCount > 9
+                            ? BorderRadius.circular(10)
+                            : null,
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        '$badgeCount',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          height: 1,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
             const SizedBox(height: 4),
             Text(
