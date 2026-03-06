@@ -91,9 +91,28 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
     }
   }
 
+  /// Convert internal ISO date (YYYY-MM-DD) to display format (dd/mm/yyyy).
+  String _isoToDisplay(String isoDate) {
+    final dt = DateTime.tryParse(isoDate);
+    if (dt == null) return isoDate;
+    return '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
+  }
+
+  /// Convert display date (dd/mm/yyyy) back to ISO (YYYY-MM-DD) for storage.
+  String _displayToIso(String displayDate) {
+    final parts = displayDate.split('/');
+    if (parts.length != 3) return displayDate;
+    final day = parts[0];
+    final month = parts[1];
+    final year = parts[2];
+    return '$year-$month-$day';
+  }
+
   void _populateFields(Receipt receipt) {
     _merchantController.text = receipt.merchantName ?? '';
-    _dateController.text = receipt.receiptDate ?? '';
+    _dateController.text = receipt.receiptDate != null
+        ? _isoToDisplay(receipt.receiptDate!)
+        : '';
     _amountController.text =
         receipt.totalAmount?.toStringAsFixed(2) ?? '';
     _currencyController.text = receipt.currency;
@@ -126,13 +145,14 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
 
     // --- Duplicate detection (runs before any write) ---
     {
+      final isoDate = _dateController.text.isNotEmpty
+          ? _displayToIso(_dateController.text)
+          : null;
       final tempReceipt = _receipt!.copyWith(
         merchantName: _merchantController.text.isNotEmpty
             ? _merchantController.text
             : null,
-        receiptDate: _dateController.text.isNotEmpty
-            ? _dateController.text
-            : null,
+        receiptDate: isoDate,
         totalAmount: receiptAmount,
       );
 
@@ -171,14 +191,15 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
 
     try {
       final finalAmount = double.tryParse(_amountController.text);
+      final finalIsoDate = _dateController.text.isNotEmpty
+          ? _displayToIso(_dateController.text)
+          : null;
 
       final updated = _receipt!.copyWith(
         merchantName: _merchantController.text.isNotEmpty
             ? _merchantController.text
             : null,
-        receiptDate: _dateController.text.isNotEmpty
-            ? _dateController.text
-            : null,
+        receiptDate: finalIsoDate,
         totalAmount: finalAmount,
         currency: _currencyController.text.isNotEmpty
             ? _currencyController.text
@@ -266,7 +287,7 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
                       ),
                     if (existing.receiptDate != null)
                       _duplicateInfoRow(
-                        Icons.calendar_today, 'תאריך', existing.receiptDate!,
+                        Icons.calendar_today, 'תאריך', _isoToDisplay(existing.receiptDate!),
                       ),
                     if (existing.totalAmount != null)
                       _duplicateInfoRow(
@@ -478,16 +499,18 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
 
   Future<void> _pickDate() async {
     final now = DateTime.now();
+    // Parse from display format (dd/mm/yyyy) for the date picker initial value
+    final isoText = _displayToIso(_dateController.text);
     final picked = await showDatePicker(
       context: context,
-      initialDate: DateTime.tryParse(_dateController.text) ?? now,
+      initialDate: DateTime.tryParse(isoText) ?? now,
       firstDate: DateTime(2020),
       lastDate: now.add(const Duration(days: 1)),
       locale: const Locale('he', 'IL'),
     );
     if (picked != null) {
       _dateController.text =
-          '${picked.year}-${picked.month.toString().padLeft(2, '0')}-${picked.day.toString().padLeft(2, '0')}';
+          '${picked.day.toString().padLeft(2, '0')}/${picked.month.toString().padLeft(2, '0')}/${picked.year}';
     }
   }
 
@@ -677,7 +700,7 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
               onPressed: _pickDate,
             ),
             keyboardType: TextInputType.datetime,
-            hint: 'YYYY-MM-DD',
+            hint: 'dd/mm/yyyy',
           ),
           const SizedBox(height: 16),
 

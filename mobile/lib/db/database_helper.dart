@@ -340,9 +340,9 @@ class DatabaseHelper {
 
   // ===== DUPLICATE DETECTION =====
 
-  /// Find existing receipts that match on merchant + date + amount.
-  /// Uses exact match on date and amount, and substring/contains for merchant
-  /// (to catch "רמי לוי" vs "רמי לוי - סניף תל אביב").
+  /// Find existing receipts that match on date + amount (same day, same sum).
+  /// Merchant name is NOT required — two receipts on the same day with the
+  /// same total are suspicious regardless of merchant.
   /// Excludes the receipt with [excludeId] (the one being checked).
   Future<List<Receipt>> findDuplicateReceipts({
     required String? merchantName,
@@ -350,16 +350,14 @@ class DatabaseHelper {
     required double? totalAmount,
     String? excludeId,
   }) async {
-    // Need at least merchant + date + amount to detect duplicates
-    if (merchantName == null || merchantName.isEmpty ||
-        receiptDate == null || receiptDate.isEmpty ||
-        totalAmount == null) {
+    // Need at least date + amount to detect duplicates
+    if (receiptDate == null || receiptDate.isEmpty || totalAmount == null) {
       return [];
     }
 
     final db = await database;
 
-    // Query for exact date + amount match first, then filter by merchant
+    // Query for exact date + amount match
     final maps = await db.query(
       'receipts',
       where: "receipt_date = ? AND total_amount = ? "
@@ -374,16 +372,7 @@ class DatabaseHelper {
 
     if (maps.isEmpty) return [];
 
-    final candidates = maps.map((m) => Receipt.fromMap(m)).toList();
-
-    // Fuzzy merchant match: substring check in both directions
-    final normalizedInput = merchantName.trim().toLowerCase();
-    return candidates.where((r) {
-      if (r.merchantName == null || r.merchantName!.isEmpty) return false;
-      final normalizedExisting = r.merchantName!.trim().toLowerCase();
-      return normalizedExisting.contains(normalizedInput) ||
-             normalizedInput.contains(normalizedExisting);
-    }).toList();
+    return maps.map((m) => Receipt.fromMap(m)).toList();
   }
 
   // ===== EXPENSE OPERATIONS =====
