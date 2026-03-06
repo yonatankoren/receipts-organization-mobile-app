@@ -1,16 +1,21 @@
 /// Google Sheets service.
 ///
-/// Writes receipt rows to a configured spreadsheet with:
+/// Writes receipt rows to a configured spreadsheet with year-based tabs:
+///   - "הוצאות YYYY" — per-year expenses tab
+///   - "סיכום YYYY"  — per-year totals tab with SUMIF formulas
+///
+/// Each year tab has:
 ///   - Sorted insertion by month (chronological order)
 ///   - Month-based color coding (12 pastel colors)
-///   - A separate "סיכום" tab with SUMIF totals per category
 ///   - Borders and formatting for a clean look
 ///   - Idempotency: checks drive_file_link (column F) before inserting
+///
+/// Spreadsheet ID is read from StorageConfigService (set during onboarding).
 
 import 'package:flutter/foundation.dart';
 import 'package:googleapis/sheets/v4.dart' as sheets;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'auth_service.dart';
+import 'storage_config_service.dart';
 import '../models/receipt.dart';
 import '../utils/constants.dart';
 
@@ -18,39 +23,42 @@ class SheetsService {
   static final SheetsService instance = SheetsService._();
   SheetsService._();
 
-  static const String _prefKeySpreadsheetId = 'sheets_spreadsheet_id';
-  static const String _prefKeySheetName = 'sheets_sheet_name';
-
   // ────────────────────────── Settings ──────────────────────────
 
-  Future<String?> getSpreadsheetId() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_prefKeySpreadsheetId);
+  /// Get the spreadsheet ID from StorageConfigService.
+  String? getSpreadsheetId() {
+    return StorageConfigService.instance.spreadsheetId;
   }
 
-  Future<void> setSpreadsheetId(String id) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_prefKeySpreadsheetId, id);
+  /// Get a direct web link for the spreadsheet.
+  /// Appends ?authuser=EMAIL so the browser opens with the correct Google account.
+  String? getSpreadsheetLink() {
+    final id = getSpreadsheetId();
+    if (id == null || id.isEmpty) return null;
+    final email = StorageConfigService.instance.accountEmail ??
+        AuthService.instance.currentUser?.email;
+    final authParam = (email != null && email.isNotEmpty) ? '?authuser=$email' : '';
+    return 'https://docs.google.com/spreadsheets/d/$id$authParam';
   }
 
-  Future<String> getSheetName() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_prefKeySheetName) ?? 'קבלות';
-  }
+  // ────────────────── Tab naming helpers ──────────────────────
 
-  Future<void> setSheetName(String name) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_prefKeySheetName, name);
-  }
+  /// Returns "הוצאות YYYY" for the given year.
+  String _expensesTabName(int year) =>
+      '${AppConstants.expensesTabPrefix} $year';
+
+  /// Returns "סיכום YYYY" for the given year.
+  String _totalsTabName(int year) =>
+      '${AppConstants.totalsTabPrefix} $year';
 
   // ────────────────────── Main entry point ──────────────────────
 
-  /// Insert a receipt row into the correct sorted position,
-  /// apply month color, borders, and ensure the totals tab exists.
+  /// Insert a receipt row into the correct year tab at the correct sorted
+  /// position, apply month color, borders, and ensure the totals tab exists.
   Future<void> appendReceiptRow(Receipt receipt) async {
-    final spreadsheetId = await getSpreadsheetId();
+    final spreadsheetId = getSpreadsheetId();
     if (spreadsheetId == null || spreadsheetId.isEmpty) {
-      throw Exception('Spreadsheet ID not configured. Set it in Settings.');
+      throw Exception('Spreadsheet ID not configured. Complete onboarding first.');
     }
 
     final client = await AuthService.instance.getAuthenticatedClient();
@@ -60,34 +68,39 @@ class SheetsService {
 
     try {
       final api = sheets.SheetsApi(client);
-      final sheetName = await getSheetName();
+      final year = receipt.receiptYear;
+      final expensesTab = _expensesTabName(year);
+      final totalsTab = _totalsTabName(year);
 
-      // 1. Ensure the main sheet headers + totals tab
-      await _ensureSetup(api, spreadsheetId, sheetName);
+      // 1. Ensure the year's expenses tab exists with headers + formatting
+      await _ensureExpensesTab(api, spreadsheetId, expensesTab);
 
-      // 2. Idempotency: check drive link in column F
+      // 2. Ensure the year's totals tab exists with SUMIF formulas
+      await _ensureTotalsTab(api, spreadsheetId, expensesTab, totalsTab);
+
+      // 3. Idempotency: check drive link in column F
       if (receipt.driveFileLink != null && receipt.driveFileLink!.isNotEmpty) {
         final dup = await _isDriveLinkInSheet(
-          api, spreadsheetId, sheetName, receipt.driveFileLink!,
+          api, spreadsheetId, expensesTab, receipt.driveFileLink!,
         );
         if (dup) {
-          debugPrint('Sheets: drive link already exists, skipping');
+          debugPrint('Sheets: drive link already exists in $expensesTab, skipping');
           return;
         }
       }
 
-      // 3. Read existing month column (A) to find insertion point
+      // 4. Read existing month column (A) to find insertion point
       final insertRow = await _findInsertionRow(
-        api, spreadsheetId, sheetName, receipt.monthSortKey,
+        api, spreadsheetId, expensesTab, receipt.monthSortKey,
       );
 
-      // 4. Get the main sheet's numeric ID (needed for batchUpdate)
-      final mainSheetId = await _getSheetId(api, spreadsheetId, sheetName);
+      // 5. Get the tab's numeric ID (needed for batchUpdate)
+      final sheetId = await _getSheetId(api, spreadsheetId, expensesTab);
 
-      // 5. Insert a blank row at the position
-      await _insertRow(api, spreadsheetId, mainSheetId, insertRow);
+      // 6. Insert a blank row at the position
+      await _insertRow(api, spreadsheetId, sheetId, insertRow);
 
-      // 6. Write the data into the new row
+      // 7. Write the data into the new row
       final row = receipt.toSheetsRow();
       final valueRange = sheets.ValueRange()
         ..values = [row.map((v) => v.toString()).toList()];
@@ -95,71 +108,100 @@ class SheetsService {
       await api.spreadsheets.values.update(
         valueRange,
         spreadsheetId,
-        '$sheetName!A$insertRow:F$insertRow',
+        '$expensesTab!A$insertRow:F$insertRow',
         valueInputOption: 'USER_ENTERED',
       );
 
-      // 7. Apply month color + borders to the new row
+      // 8. Apply month color + borders to the new row
       final month = _monthFromSortKey(receipt.monthSortKey);
-      await _formatRow(api, spreadsheetId, mainSheetId, insertRow, month);
+      await _formatRow(api, spreadsheetId, sheetId, insertRow, month);
 
-      debugPrint('Sheets: inserted receipt at row $insertRow (month ${receipt.sheetsMonth})');
+      debugPrint(
+        'Sheets: inserted receipt at row $insertRow in "$expensesTab" '
+        '(month ${receipt.sheetsMonth})',
+      );
     } finally {
       client.close();
     }
   }
 
-  // ──────────────────────── Setup helpers ────────────────────────
+  // ──────────────── Year expenses tab setup ────────────────────
 
-  /// Ensure main sheet headers exist and the totals tab is set up.
-  Future<void> _ensureSetup(
+  /// Ensure the expenses tab for a given year exists with headers.
+  /// If the tab doesn't exist, create it and write headers.
+  Future<void> _ensureExpensesTab(
     sheets.SheetsApi api,
     String spreadsheetId,
-    String sheetName,
+    String tabName,
   ) async {
-    // --- Main sheet headers ---
-    try {
-      final resp = await api.spreadsheets.values.get(
-        spreadsheetId,
-        '$sheetName!A1:F1',
-      );
-      if (resp.values == null || resp.values!.isEmpty) {
-        await _writeHeaders(api, spreadsheetId, sheetName);
-      }
-    } catch (e) {
-      debugPrint('Sheets: header check error: $e');
+    final spreadsheet = await api.spreadsheets.get(spreadsheetId);
+    final exists = spreadsheet.sheets?.any(
+      (s) => s.properties?.title == tabName,
+    ) ?? false;
+
+    if (exists) {
+      // Tab exists — check if headers are set
       try {
-        await _writeHeaders(api, spreadsheetId, sheetName);
-      } catch (_) {}
+        final resp = await api.spreadsheets.values.get(
+          spreadsheetId,
+          '$tabName!A1:F1',
+        );
+        if (resp.values == null || resp.values!.isEmpty) {
+          await _writeHeaders(api, spreadsheetId, tabName);
+        }
+      } catch (e) {
+        debugPrint('Sheets: header check error in $tabName: $e');
+        try {
+          await _writeHeaders(api, spreadsheetId, tabName);
+        } catch (_) {}
+      }
+      return;
     }
 
-    // --- Totals tab ---
-    await _ensureTotalsSheet(api, spreadsheetId, sheetName);
+    // Create new tab
+    try {
+      await api.spreadsheets.batchUpdate(
+        sheets.BatchUpdateSpreadsheetRequest(requests: [
+          sheets.Request(
+            addSheet: sheets.AddSheetRequest(
+              properties: sheets.SheetProperties(title: tabName),
+            ),
+          ),
+        ]),
+        spreadsheetId,
+      );
+      debugPrint('Sheets: created tab "$tabName"');
+    } catch (e) {
+      debugPrint('Sheets: tab "$tabName" may already exist: $e');
+    }
+
+    // Write headers + formatting
+    await _writeHeaders(api, spreadsheetId, tabName);
   }
 
   Future<void> _writeHeaders(
     sheets.SheetsApi api,
     String spreadsheetId,
-    String sheetName,
+    String tabName,
   ) async {
     final vr = sheets.ValueRange()
       ..values = [AppConstants.sheetsHeaders];
     await api.spreadsheets.values.update(
       vr,
       spreadsheetId,
-      '$sheetName!A1:F1',
+      '$tabName!A1:F1',
       valueInputOption: 'RAW',
     );
 
     // Format the header row: bold + dark background
-    final mainSheetId = await _getSheetId(api, spreadsheetId, sheetName);
+    final sheetId = await _getSheetId(api, spreadsheetId, tabName);
     await api.spreadsheets.batchUpdate(
       sheets.BatchUpdateSpreadsheetRequest(requests: [
         // Bold header text
         sheets.Request(
           repeatCell: sheets.RepeatCellRequest(
             range: sheets.GridRange(
-              sheetId: mainSheetId,
+              sheetId: sheetId,
               startRowIndex: 0,
               endRowIndex: 1,
               startColumnIndex: 0,
@@ -186,7 +228,7 @@ class SheetsService {
         sheets.Request(
           updateBorders: sheets.UpdateBordersRequest(
             range: sheets.GridRange(
-              sheetId: mainSheetId,
+              sheetId: sheetId,
               startRowIndex: 0,
               endRowIndex: 1,
               startColumnIndex: 0,
@@ -200,12 +242,12 @@ class SheetsService {
           ),
         ),
         // Set column widths
-        ..._columnWidthRequests(mainSheetId),
+        ..._columnWidthRequests(sheetId),
         // Freeze header row
         sheets.Request(
           updateSheetProperties: sheets.UpdateSheetPropertiesRequest(
             properties: sheets.SheetProperties(
-              sheetId: mainSheetId,
+              sheetId: sheetId,
               gridProperties: sheets.GridProperties(frozenRowCount: 1),
             ),
             fields: 'gridProperties.frozenRowCount',
@@ -215,22 +257,22 @@ class SheetsService {
       spreadsheetId,
     );
 
-    debugPrint('Sheets: wrote + formatted headers');
+    debugPrint('Sheets: wrote + formatted headers for "$tabName"');
   }
 
-  // ─────────────────── Totals sheet (סיכום) ───────────────────
+  // ─────────────────── Totals tab (סיכום YYYY) ───────────────────
 
-  Future<void> _ensureTotalsSheet(
+  /// Ensure the per-year totals tab exists with SUMIF formulas.
+  Future<void> _ensureTotalsTab(
     sheets.SheetsApi api,
     String spreadsheetId,
-    String mainSheetName,
+    String expensesTabName,
+    String totalsTabName,
   ) async {
-    final totalsName = AppConstants.totalSheetName;
-
     // Check if the tab already exists
     final spreadsheet = await api.spreadsheets.get(spreadsheetId);
     final exists = spreadsheet.sheets?.any(
-      (s) => s.properties?.title == totalsName,
+      (s) => s.properties?.title == totalsTabName,
     ) ?? false;
 
     if (exists) return; // Already set up
@@ -241,19 +283,19 @@ class SheetsService {
         sheets.BatchUpdateSpreadsheetRequest(requests: [
           sheets.Request(
             addSheet: sheets.AddSheetRequest(
-              properties: sheets.SheetProperties(title: totalsName),
+              properties: sheets.SheetProperties(title: totalsTabName),
             ),
           ),
         ]),
         spreadsheetId,
       );
     } catch (e) {
-      debugPrint('Sheets: totals tab might already exist: $e');
+      debugPrint('Sheets: totals tab "$totalsTabName" might already exist: $e');
       return;
     }
 
     // Get the new sheet's ID
-    final totalsSheetId = await _getSheetId(api, spreadsheetId, totalsName);
+    final totalsSheetId = await _getSheetId(api, spreadsheetId, totalsTabName);
 
     // Build header + category rows + overall total
     final categories = AppConstants.categories;
@@ -261,16 +303,16 @@ class SheetsService {
       ['קטגוריה', 'סכום'], // Header (row 1)
       ...categories.map((cat) => [
         cat,
-        "=SUMIF('$mainSheetName'!E:E,\"$cat\",'$mainSheetName'!C:C)",
+        "=SUMIF('$expensesTabName'!E:E,\"$cat\",'$expensesTabName'!C:C)",
       ]),
-      ['סה"כ', '=SUM(B2:B10)'], // Total row — sums the SUMIF results above
+      ['סה"כ', '=SUM(B2:B${categories.length + 1})'], // Sum the SUMIF results
     ];
 
     final vr = sheets.ValueRange()..values = rows;
     await api.spreadsheets.values.update(
       vr,
       spreadsheetId,
-      '$totalsName!A1:B${rows.length}',
+      '$totalsTabName!A1:B${rows.length}',
       valueInputOption: 'USER_ENTERED',
     );
 
@@ -416,7 +458,7 @@ class SheetsService {
       spreadsheetId,
     );
 
-    debugPrint('Sheets: created and formatted totals tab');
+    debugPrint('Sheets: created and formatted totals tab "$totalsTabName"');
   }
 
   // ────────────────── Sorted insertion logic ──────────────────
@@ -428,13 +470,13 @@ class SheetsService {
   Future<int> _findInsertionRow(
     sheets.SheetsApi api,
     String spreadsheetId,
-    String sheetName,
+    String tabName,
     int newSortKey,
   ) async {
     try {
       final resp = await api.spreadsheets.values.get(
         spreadsheetId,
-        '$sheetName!A:A',
+        '$tabName!A:A',
       );
 
       final values = resp.values;
@@ -593,14 +635,14 @@ class SheetsService {
   Future<bool> _isDriveLinkInSheet(
     sheets.SheetsApi api,
     String spreadsheetId,
-    String sheetName,
+    String tabName,
     String driveLink,
   ) async {
     try {
       // Use FORMULA value render option to see the raw HYPERLINK formula
       final resp = await api.spreadsheets.values.get(
         spreadsheetId,
-        '$sheetName!F:F',
+        '$tabName!F:F',
         valueRenderOption: 'FORMULA',
       );
       if (resp.values == null) return false;
@@ -626,11 +668,11 @@ class SheetsService {
   Future<int> _getSheetId(
     sheets.SheetsApi api,
     String spreadsheetId,
-    String sheetName,
+    String tabName,
   ) async {
     final spreadsheet = await api.spreadsheets.get(spreadsheetId);
     for (final sheet in spreadsheet.sheets ?? <sheets.Sheet>[]) {
-      if (sheet.properties?.title == sheetName) {
+      if (sheet.properties?.title == tabName) {
         return sheet.properties!.sheetId ?? 0;
       }
     }

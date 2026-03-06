@@ -1,15 +1,16 @@
 /// Google Drive service.
 /// Handles uploading receipt images to organized folders by month and category.
-/// Folder structure: Receipts/YYYY-MM/category/receipt_id.jpg
+/// Folder structure: <root>/YYYY-MM/category/<merchant> <MM-YYYY>.jpg
 ///
-/// Folders are created lazily — only when a receipt needs them.
+/// The root folder ID comes from StorageConfigService (set during onboarding).
+/// Subfolders are created lazily — only when a receipt needs them.
 /// Idempotency: checks if file already exists by name before uploading.
 
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'auth_service.dart';
-import '../utils/constants.dart';
+import 'storage_config_service.dart';
 
 class DriveService {
   static final DriveService instance = DriveService._();
@@ -25,38 +26,41 @@ class DriveService {
     required String receiptId,
     required String monthFolder, // "YYYY-MM"
     required String category, // e.g. "מזון", "תחבורה", "אחר"
+    required String displayName, // e.g. "רמי לוי 03/2025"
   }) async {
     final client = await AuthService.instance.getAuthenticatedClient();
     if (client == null) {
       throw Exception('Not authenticated — cannot upload to Drive');
     }
 
+    // Get the root folder ID from StorageConfigService
+    final rootFolderId = StorageConfigService.instance.receiptsRootFolderId;
+    if (rootFolderId == null || rootFolderId.isEmpty) {
+      throw Exception('Root folder not configured — complete onboarding first');
+    }
+
     try {
       final driveApi = drive.DriveApi(client);
-      final fileName = '$receiptId.jpg';
+      // Use the short receipt ID suffix for uniqueness (avoids collisions
+      // when the same merchant appears multiple times in one month).
+      final shortId = receiptId.substring(0, 4);
+      final fileName = '$displayName ($shortId).jpg';
 
-      // 1. Ensure root "Receipts" folder exists
-      final rootFolderId = await _ensureFolder(
-        driveApi,
-        AppConstants.driveFolderRoot,
-        'root',
-      );
-
-      // 2. Ensure month subfolder exists (created lazily)
+      // 1. Ensure month subfolder exists under the root (created lazily)
       final monthFolderId = await _ensureFolder(
         driveApi,
         monthFolder,
         rootFolderId,
       );
 
-      // 3. Ensure category subfolder inside month (created lazily)
+      // 2. Ensure category subfolder inside month (created lazily)
       final categoryFolderId = await _ensureFolder(
         driveApi,
         category,
         monthFolderId,
       );
 
-      // 4. Check if file already exists (idempotency)
+      // 3. Check if file already exists (idempotency)
       final existing = await driveApi.files.list(
         q: "name = '$fileName' and '$categoryFolderId' in parents and trashed = false",
         spaces: 'drive',
@@ -72,7 +76,7 @@ class DriveService {
         );
       }
 
-      // 5. Upload the file into the category subfolder
+      // 4. Upload the file into the category subfolder
       final localFile = File(localPath);
       if (!await localFile.exists()) {
         throw Exception('Local image not found: $localPath');
@@ -108,12 +112,8 @@ class DriveService {
     String parentId,
   ) async {
     // Search for existing folder
-    final parentQuery = parentId == 'root'
-        ? "'root' in parents"
-        : "'$parentId' in parents";
-
     final search = await api.files.list(
-      q: "name = '$folderName' and $parentQuery and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+      q: "name = '$folderName' and '$parentId' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
       spaces: 'drive',
       $fields: 'files(id)',
     );
@@ -138,32 +138,39 @@ class DriveService {
     final client = await AuthService.instance.getAuthenticatedClient();
     if (client == null) return null;
 
+    final rootFolderId = StorageConfigService.instance.receiptsRootFolderId;
+    if (rootFolderId == null || rootFolderId.isEmpty) return null;
+
     try {
       final driveApi = drive.DriveApi(client);
 
-      // Find root folder
-      final rootSearch = await driveApi.files.list(
-        q: "name = '${AppConstants.driveFolderRoot}' and 'root' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
-        spaces: 'drive',
-        $fields: 'files(id)',
-      );
-      if (rootSearch.files == null || rootSearch.files!.isEmpty) return null;
-      final rootId = rootSearch.files!.first.id!;
-
-      // Find month folder
+      // Find month folder directly under the stored root folder ID
       final monthSearch = await driveApi.files.list(
-        q: "name = '$monthFolder' and '$rootId' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+        q: "name = '$monthFolder' and '$rootFolderId' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
         spaces: 'drive',
         $fields: 'files(id, webViewLink)',
       );
       if (monthSearch.files == null || monthSearch.files!.isEmpty) return null;
 
       final folder = monthSearch.files!.first;
-      return folder.webViewLink ??
-          'https://drive.google.com/drive/folders/${folder.id}';
+      final email = StorageConfigService.instance.accountEmail ??
+          AuthService.instance.currentUser?.email;
+      final authParam = (email != null && email.isNotEmpty) ? '?authuser=$email' : '';
+      return (folder.webViewLink ??
+          'https://drive.google.com/drive/folders/${folder.id}') + authParam;
     } finally {
       client.close();
     }
   }
-}
 
+  /// Get a direct web link for the root receipts folder.
+  /// Appends ?authuser=EMAIL so the browser opens with the correct Google account.
+  Future<String?> getRootFolderLink() async {
+    final rootFolderId = StorageConfigService.instance.receiptsRootFolderId;
+    if (rootFolderId == null || rootFolderId.isEmpty) return null;
+    final email = StorageConfigService.instance.accountEmail ??
+        AuthService.instance.currentUser?.email;
+    final authParam = (email != null && email.isNotEmpty) ? '?authuser=$email' : '';
+    return 'https://drive.google.com/drive/folders/$rootFolderId$authParam';
+  }
+}

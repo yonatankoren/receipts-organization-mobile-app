@@ -139,7 +139,14 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
       final duplicate = await appState.checkForDuplicate(tempReceipt);
       if (duplicate != null && mounted) {
         final proceed = await _showDuplicateWarning(duplicate);
-        if (proceed != true) return; // User cancelled
+        if (proceed != true) {
+          // User cancelled — clean up the receipt and go back to home screen
+          await appState.cancelExpenseReceipt(widget.receiptId);
+          if (mounted) {
+            Navigator.of(context).popUntil((route) => route.isFirst);
+          }
+          return;
+        }
       }
     }
 

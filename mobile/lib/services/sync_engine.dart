@@ -218,11 +218,18 @@ class SyncEngine extends ChangeNotifier {
       return; // Already uploaded
     }
 
+    // Build Hebrew display name: "<merchant> <MM/YYYY>"
+    final merchant = (receipt.merchantName != null && receipt.merchantName!.isNotEmpty)
+        ? receipt.merchantName!
+        : 'קבלה';
+    final displayName = '$merchant ${receipt.sheetsMonth}';
+
     final result = await DriveService.instance.uploadReceiptImage(
       localPath: receipt.imagePath,
       receiptId: receipt.id,
       monthFolder: receipt.driveFolderName,
       category: receipt.category ?? 'אחר',
+      displayName: displayName,
     );
 
     // Update receipt with Drive info

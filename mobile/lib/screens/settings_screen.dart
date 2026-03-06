@@ -1,20 +1,24 @@
-/// Settings Screen — Google sign-in, configuration, debug info.
+/// Settings Screen — Google sign-in, storage info, backend config, debug info.
 ///
 /// Features:
 ///   - Google Sign-In status + button
+///   - Storage section: linked Drive folder + Spreadsheet with open/change
 ///   - Backend URL configuration
-///   - Spreadsheet ID configuration
-///   - Drive folder info
 ///   - Debug: storage usage, pending jobs, recent errors
 
 import 'package:flutter/material.dart';
+import 'package:googleapis/drive/v3.dart' as drive;
+import 'package:url_launcher/url_launcher.dart';
 import '../services/auth_service.dart';
 import '../services/backend_service.dart';
+import '../services/drive_service.dart';
 import '../services/sheets_service.dart';
+import '../services/storage_config_service.dart';
 import '../services/sync_engine.dart';
 import '../services/image_service.dart';
 import '../db/database_helper.dart';
 import '../utils/constants.dart';
+import '../widgets/drive_folder_picker.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -24,10 +28,6 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  final _backendUrlController = TextEditingController();
-  final _spreadsheetIdController = TextEditingController();
-  final _sheetNameController = TextEditingController();
-
   bool _isLoading = true;
   int _pendingJobs = 0;
   int _totalReceipts = 0;
@@ -40,18 +40,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadSettings();
   }
 
-  @override
-  void dispose() {
-    _backendUrlController.dispose();
-    _spreadsheetIdController.dispose();
-    _sheetNameController.dispose();
-    super.dispose();
-  }
-
   Future<void> _loadSettings() async {
-    final backendUrl = await BackendService.instance.getBackendUrl();
-    final spreadsheetId = await SheetsService.instance.getSpreadsheetId();
-    final sheetName = await SheetsService.instance.getSheetName();
     final pendingJobs = await DatabaseHelper.instance.getPendingJobCount();
     final receipts = await DatabaseHelper.instance.getAllReceipts();
     final storageBytes = await ImageService.instance.getTotalStorageBytes();
@@ -59,9 +48,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     if (mounted) {
       setState(() {
-        _backendUrlController.text = backendUrl;
-        _spreadsheetIdController.text = spreadsheetId ?? '';
-        _sheetNameController.text = sheetName;
         _pendingJobs = pendingJobs;
         _totalReceipts = receipts.length;
         _storageUsage = _formatBytes(storageBytes);
@@ -71,19 +57,134 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _saveSettings() async {
-    await BackendService.instance.setBackendUrl(_backendUrlController.text);
-    await SheetsService.instance
-        .setSpreadsheetId(_spreadsheetIdController.text);
-    await SheetsService.instance.setSheetName(_sheetNameController.text);
+  Future<void> _openUrl(String url) async {
+    final uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      // Use inAppBrowserView (Chrome Custom Tab) to respect ?authuser=
+      // and avoid the native app account chooser dialog.
+      await launchUrl(uri, mode: LaunchMode.inAppBrowserView);
+    }
+  }
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('ההגדרות נשמרו ✓'),
-          backgroundColor: Colors.green,
-        ),
+  Future<void> _changeFolder() async {
+    final result = await showDriveFolderPicker(context);
+    if (result != null) {
+      await StorageConfigService.instance.setFolderConfig(
+        folderId: result.folderId,
+        folderName: result.folderName,
       );
+      if (mounted) {
+        setState(() {});
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('התיקייה שונתה ל: ${result.folderName} ✓'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _changeSpreadsheet() async {
+    // Show a dialog to let the user enter a spreadsheet ID or create a new one
+    final config = StorageConfigService.instance;
+    final controller = TextEditingController(
+      text: config.spreadsheetId ?? '',
+    );
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('שינוי גיליון'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'הזינו מזהה גיליון חדש, או לחצו "צור חדש" ליצירת גיליון חדש בתיקייה הנוכחית.',
+              style: TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              decoration: InputDecoration(
+                labelText: 'מזהה גיליון (Spreadsheet ID)',
+                hintText: 'מזהה מה-URL של הגיליון',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('ביטול'),
+          ),
+          TextButton(
+            onPressed: () async {
+              // Create a new spreadsheet in the current folder
+              final folderId = config.receiptsRootFolderId;
+              if (folderId == null) {
+                Navigator.pop(ctx);
+                return;
+              }
+
+              try {
+                final client =
+                    await AuthService.instance.getAuthenticatedClient();
+                if (client == null) return;
+
+                try {
+                  final driveApi = drive.DriveApi(client);
+                  final spreadsheet = drive.File()
+                    ..name = AppConstants.spreadsheetDefaultName
+                    ..mimeType = 'application/vnd.google-apps.spreadsheet'
+                    ..parents = [folderId];
+
+                  final created = await driveApi.files
+                      .create(spreadsheet, $fields: 'id, name');
+                  if (ctx.mounted) Navigator.pop(ctx, created.id);
+                } finally {
+                  client.close();
+                }
+              } catch (e) {
+                if (ctx.mounted) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    SnackBar(content: Text('שגיאה: $e')),
+                  );
+                }
+              }
+            },
+            child: const Text('צור חדש'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final text = controller.text.trim();
+              if (text.isNotEmpty) Navigator.pop(ctx, text);
+            },
+            child: const Text('שמור'),
+          ),
+        ],
+      ),
+    );
+
+    controller.dispose();
+
+    if (result != null && result.isNotEmpty) {
+      await config.setSpreadsheetConfig(
+        spreadsheetId: result,
+        spreadsheetName: AppConstants.spreadsheetDefaultName,
+      );
+      if (mounted) {
+        setState(() {});
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('הגיליון שונה ✓'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
     }
   }
 
@@ -97,6 +198,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final authService = AuthService.instance;
+    final config = StorageConfigService.instance;
 
     return Scaffold(
       appBar: AppBar(
@@ -201,88 +303,100 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 24),
 
-                // Backend Configuration
-                _buildSectionHeader(theme, 'שרת Backend', Icons.dns),
+                // Storage Section
+                _buildSectionHeader(theme, 'אחסון', Icons.cloud),
                 Card(
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Padding(
                     padding: const EdgeInsets.all(16),
-                    child: Column(
-                      children: [
-                        TextField(
-                          controller: _backendUrlController,
-                          decoration: InputDecoration(
-                            labelText: 'כתובת השרת',
-                            hintText: AppConstants.defaultBackendUrl,
-                            prefixIcon: const Icon(Icons.link),
-                            suffixIcon: Icon(
-                              _backendHealthy
-                                  ? Icons.check_circle
-                                  : Icons.error,
-                              color: _backendHealthy
-                                  ? Colors.green
-                                  : Colors.red,
+                    child: ListenableBuilder(
+                      listenable: config,
+                      builder: (context, _) {
+                        final folderName = config.receiptsRootFolderName;
+                        final sheetName = config.spreadsheetName;
+
+                        if (folderName == null && sheetName == null) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 8),
+                            child: Text(
+                              'האחסון לא הוגדר. חזרו למסך הראשי להגדרה.',
+                              style: TextStyle(color: Colors.grey),
                             ),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
+                          );
+                        }
+
+                        return Column(
+                          children: [
+                            // Drive folder
+                            _buildStorageRow(
+                              theme,
+                              icon: Icons.folder,
+                              label: 'תיקיית Drive',
+                              value: folderName ?? 'לא הוגדרה',
+                              onOpen: () async {
+                                final link = await DriveService.instance
+                                    .getRootFolderLink();
+                                if (link != null) _openUrl(link);
+                              },
+                              onChangeTap: _changeFolder,
+                              changeLabel: 'שינוי תיקייה',
                             ),
-                          ),
-                          keyboardType: TextInputType.url,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          _backendHealthy
-                              ? 'השרת פעיל ✓'
-                              : 'השרת לא זמין',
-                          style: TextStyle(
-                            color:
-                                _backendHealthy ? Colors.green : Colors.red,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ],
+                            const Divider(height: 24),
+                            // Spreadsheet
+                            _buildStorageRow(
+                              theme,
+                              icon: Icons.table_chart,
+                              label: 'גיליון Sheets',
+                              value: sheetName ?? 'לא הוגדר',
+                              onOpen: () {
+                                final link = SheetsService.instance
+                                    .getSpreadsheetLink();
+                                if (link != null) _openUrl(link);
+                              },
+                              onChangeTap: _changeSpreadsheet,
+                              changeLabel: 'שינוי גיליון',
+                            ),
+                          ],
+                        );
+                      },
                     ),
                   ),
                 ),
                 const SizedBox(height: 24),
 
-                // Google Sheets Configuration
-                _buildSectionHeader(
-                    theme, 'Google Sheets', Icons.table_chart),
+                // Backend Status
+                _buildSectionHeader(theme, 'שרת עיבוד', Icons.dns),
                 Card(
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      children: [
-                        TextField(
-                          controller: _spreadsheetIdController,
-                          decoration: InputDecoration(
-                            labelText: 'מזהה הגיליון (Spreadsheet ID)',
-                            hintText: 'מזהה מה-URL של הגיליון',
-                            prefixIcon: const Icon(Icons.key),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: _sheetNameController,
-                          decoration: InputDecoration(
-                            labelText: 'שם הגיליון (Tab)',
-                            hintText: 'קבלות',
-                            prefixIcon: const Icon(Icons.tab),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                        ),
-                      ],
+                  child: ListTile(
+                    leading: Icon(
+                      _backendHealthy
+                          ? Icons.check_circle
+                          : Icons.error,
+                      color: _backendHealthy ? Colors.green : Colors.red,
+                      size: 28,
+                    ),
+                    title: Text(
+                      _backendHealthy
+                          ? 'השרת פעיל ומוכן'
+                          : 'השרת לא זמין',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: _backendHealthy ? Colors.green : Colors.red,
+                      ),
+                    ),
+                    subtitle: Text(
+                      _backendHealthy
+                          ? 'עיבוד קבלות יתבצע כרגיל'
+                          : 'קבלות ישמרו מקומית ויעובדו כשהשרת יחזור',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ),
                 ),
@@ -363,29 +477,71 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     label: const Text('סנכרן עכשיו'),
                   ),
                 ),
-                const SizedBox(height: 12),
 
-                // Save button
-                SizedBox(
-                  width: double.infinity,
-                  height: 54,
-                  child: ElevatedButton.icon(
-                    onPressed: _saveSettings,
-                    icon: const Icon(Icons.save),
-                    label: const Text('שמור הגדרות',
-                        style: TextStyle(fontSize: 16)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Theme.of(context).colorScheme.primary,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                    ),
-                  ),
-                ),
                 const SizedBox(height: 32),
               ],
             ),
+    );
+  }
+
+  Widget _buildStorageRow(
+    ThemeData theme, {
+    required IconData icon,
+    required String label,
+    required String value,
+    required VoidCallback onOpen,
+    required VoidCallback onChangeTap,
+    required String changeLabel,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(icon, size: 20, color: theme.colorScheme.primary),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: theme.textTheme.titleSmall?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            TextButton.icon(
+              onPressed: onOpen,
+              icon: const Icon(Icons.open_in_new, size: 16),
+              label: const Text('פתח'),
+              style: TextButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                textStyle: const TextStyle(fontSize: 13),
+              ),
+            ),
+            const SizedBox(width: 8),
+            TextButton.icon(
+              onPressed: onChangeTap,
+              icon: const Icon(Icons.edit, size: 16),
+              label: Text(changeLabel),
+              style: TextButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                textStyle: const TextStyle(fontSize: 13),
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 
@@ -408,4 +564,3 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 }
-

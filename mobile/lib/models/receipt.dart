@@ -178,6 +178,14 @@ class Receipt {
     return '${date.month.toString().padLeft(2, '0')}/${date.year}';
   }
 
+  /// The receipt year (e.g. 2025).
+  int get receiptYear {
+    final date = receiptDate != null
+        ? DateTime.tryParse(receiptDate!) ?? captureTimestamp
+        : captureTimestamp;
+    return date.year;
+  }
+
   /// Numeric sort key for the month: YYYYMM (e.g. 202503).
   int get monthSortKey {
     final date = receiptDate != null

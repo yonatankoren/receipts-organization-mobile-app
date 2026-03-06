@@ -1,12 +1,16 @@
 /// App root widget — configures theme, locale, and providers.
+/// Uses HomeRouter to direct users through onboarding or to the main camera.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 import 'providers/app_state.dart';
 import 'services/auth_service.dart';
+import 'services/storage_config_service.dart';
 import 'services/sync_engine.dart';
 import 'screens/camera_capture_screen.dart';
+import 'screens/onboarding/google_connect_screen.dart';
+import 'screens/onboarding/storage_setup_screen.dart';
 
 class ReceiptsApp extends StatelessWidget {
   const ReceiptsApp({super.key});
@@ -18,6 +22,7 @@ class ReceiptsApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => AppState()),
         ChangeNotifierProvider.value(value: AuthService.instance),
         ChangeNotifierProvider.value(value: SyncEngine.instance),
+        ChangeNotifierProvider.value(value: StorageConfigService.instance),
       ],
       child: MaterialApp(
         title: 'קבלות',
@@ -62,10 +67,91 @@ class ReceiptsApp extends StatelessWidget {
           ),
         ),
 
-        // Camera opens immediately — the default launch screen
-        home: const CameraCaptureScreen(),
+        // Route through HomeRouter instead of directly to camera
+        home: const HomeRouter(),
       ),
     );
   }
 }
 
+/// Routes the user to the correct screen based on auth + storage config state.
+///
+/// Flow:
+///   1. Not signed in → GoogleConnectScreen
+///   2. Signed in, no folder/sheet IDs → StorageSetupScreen
+///   3. Fully configured → CameraCaptureScreen
+class HomeRouter extends StatefulWidget {
+  const HomeRouter({super.key});
+
+  @override
+  State<HomeRouter> createState() => _HomeRouterState();
+}
+
+class _HomeRouterState extends State<HomeRouter> {
+  bool _isChecking = true;
+  Widget? _destination;
+
+  @override
+  void initState() {
+    super.initState();
+    _determineDestination();
+  }
+
+  Future<void> _determineDestination() async {
+    final auth = AuthService.instance;
+    final config = StorageConfigService.instance;
+
+    // Step 1: Not signed in?
+    if (!auth.isSignedIn) {
+      if (mounted) {
+        setState(() {
+          _destination = const GoogleConnectScreen();
+          _isChecking = false;
+        });
+      }
+      return;
+    }
+
+    // Step 2: Signed in but no storage configured?
+    if (!config.isFullyConfigured) {
+      if (mounted) {
+        setState(() {
+          _destination = const StorageSetupScreen();
+          _isChecking = false;
+        });
+      }
+      return;
+    }
+
+    // Step 3: Fully configured — validate access
+    final validation = await config.validateAccess();
+    if (!validation.allOk) {
+      if (mounted) {
+        setState(() {
+          _destination = const StorageSetupScreen(isRelink: true);
+          _isChecking = false;
+        });
+      }
+      return;
+    }
+
+    // All good — go to camera
+    if (mounted) {
+      setState(() {
+        _destination = const CameraCaptureScreen();
+        _isChecking = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isChecking) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    return _destination!;
+  }
+}

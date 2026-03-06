@@ -7,8 +7,10 @@ class AppConstants {
   static const String defaultBackendUrl = 'https://receipts-backend-416729458155.me-west1.run.app'; 
 
   // --- Google Drive folder structure ---
-  static const String driveFolderRoot = 'Receipts';
-  // Subfolders created as: Receipts/YYYY-MM/
+  static const String driveFolderRoot = 'הוצאות';
+  static const String driveRootFolderDefaultName = 'הוצאות';
+  static const String spreadsheetDefaultName = 'הוצאות';
+  // Subfolders created as: הוצאות/YYYY-MM/category/
 
   // --- Google Sheets ---
   static const List<String> sheetsHeaders = [
@@ -23,8 +25,15 @@ class AppConstants {
   /// Number of data columns in the main sheet
   static const int sheetsColumnCount = 6; // A–F
 
-  /// Name of the totals summary tab
-  static const String totalSheetName = 'סיכום';
+  /// Default tab name for the main receipts sheet (no longer used as fixed name;
+  /// tabs are now year-based: "הוצאות YYYY").
+  static const String sheetsDefaultTabName = 'קבלות';
+
+  /// Prefix for per-year expenses tab
+  static const String expensesTabPrefix = 'הוצאות';
+
+  /// Prefix for per-year totals tab
+  static const String totalsTabPrefix = 'סיכום';
 
   /// Month background colors (1-indexed: Jan=1 … Dec=12).
   /// Light pastels in a smooth visual progression.
@@ -63,9 +72,14 @@ class AppConstants {
 
   // --- Google OAuth Scopes ---
   static const List<String> googleScopes = [
-    'https://www.googleapis.com/auth/drive.file',
+    'https://www.googleapis.com/auth/drive',
     'https://www.googleapis.com/auth/spreadsheets',
   ];
+
+  // --- Google Picker API Key ---
+  // Create a Browser API key in Google Cloud Console > Credentials.
+  // Enable the "Picker API" in APIs & Services.
+  static const String pickerApiKey = 'AIzaSyCc9350vS4pNdvfkfJI-M-zAew4RidPZxM';
 
   // --- Currency default ---
   static const String defaultCurrency = 'ILS';

@@ -3,12 +3,14 @@
 /// Initialization order:
 ///   1. Flutter bindings
 ///   2. Google Sign-In (silent, non-blocking)
-///   3. Sync engine (connectivity monitor + job processor)
-///   4. Launch app → CameraCaptureScreen
+///   3. Storage config (load cached IDs)
+///   4. Sync engine (connectivity monitor + job processor)
+///   5. Launch app → HomeRouter decides first screen
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'services/auth_service.dart';
+import 'services/storage_config_service.dart';
 import 'services/sync_engine.dart';
 import 'app.dart';
 
@@ -22,8 +24,8 @@ void main() async {
 
   // Initialize services (non-blocking)
   await AuthService.instance.init();
+  await StorageConfigService.instance.init();
   SyncEngine.instance.init();
 
   runApp(const ReceiptsApp());
 }
-
