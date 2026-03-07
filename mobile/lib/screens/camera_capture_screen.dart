@@ -15,7 +15,6 @@ import 'package:url_launcher/url_launcher.dart';
 import '../providers/app_state.dart';
 import '../services/drive_service.dart';
 import '../services/sync_engine.dart';
-import '../widgets/sync_status_indicator.dart';
 import 'review_and_fix_screen.dart';
 import 'receipts_list_screen.dart';
 import 'expenses_list_screen.dart';
@@ -372,9 +371,6 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
                         onTap: _toggleFlash,
                       ),
                     const Spacer(),
-                    // Sync status
-                    const SyncStatusIndicator(),
-                    const SizedBox(width: 8),
                     // Settings
                     _buildTopButton(
                       icon: Icons.settings,

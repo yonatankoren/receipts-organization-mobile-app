@@ -12,7 +12,6 @@ import 'package:provider/provider.dart';
 import '../models/receipt.dart';
 import '../providers/app_state.dart';
 import '../services/drive_service.dart';
-import '../widgets/sync_status_indicator.dart';
 import 'review_and_fix_screen.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -37,10 +36,7 @@ class _ReceiptsListScreenState extends State<ReceiptsListScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('הקבלות שלי'),
-        actions: const [
-          SyncStatusIndicator(),
-          SizedBox(width: 12),
-        ],
+        actions: const [],
       ),
       body: Consumer<AppState>(
         builder: (context, appState, _) {
@@ -98,8 +94,6 @@ class _ReceiptsListScreenState extends State<ReceiptsListScreen> {
     List<Receipt> receipts,
     ThemeData theme,
   ) {
-    final pendingCount =
-        receipts.where((r) => !r.isFullySynced).length;
     final monthLabel = _formatMonthLabel(monthKey);
 
     return Column(
@@ -138,25 +132,6 @@ class _ReceiptsListScreenState extends State<ReceiptsListScreen> {
                   ),
                 ),
               ),
-              if (pendingCount > 0) ...[
-                const SizedBox(width: 6),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: Colors.orange.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Text(
-                    '$pendingCount ממתינים',
-                    style: const TextStyle(
-                      color: Colors.orange,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-              ],
               const Spacer(),
               // Open in Drive action
               IconButton(

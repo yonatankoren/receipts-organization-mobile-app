@@ -396,21 +396,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       const Divider(height: 1),
                       ListTile(
-                        leading: Icon(
-                          Icons.sync,
-                          color: _pendingJobs > 0 ? Colors.orange : Colors.green,
-                        ),
-                        title: const Text('משימות בתור'),
-                        trailing: Text(
-                          '$_pendingJobs',
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            color:
-                                _pendingJobs > 0 ? Colors.orange : Colors.green,
-                          ),
-                        ),
-                      ),
-                      const Divider(height: 1),
-                      ListTile(
                         leading: const Icon(Icons.storage),
                         title: const Text('אחסון מקומי'),
                         trailing: Text(_storageUsage,
