@@ -9,6 +9,7 @@ import 'services/auth_service.dart';
 import 'services/storage_config_service.dart';
 import 'services/sync_engine.dart';
 import 'screens/camera_capture_screen.dart';
+import 'screens/main_pager_screen.dart';
 import 'screens/onboarding/google_connect_screen.dart';
 import 'screens/onboarding/storage_setup_screen.dart';
 
@@ -135,10 +136,10 @@ class _HomeRouterState extends State<HomeRouter> {
       return;
     }
 
-    // All good — go to camera
+    // All good — go to main pager (camera + statistics)
     if (mounted) {
       setState(() {
-        _destination = const CameraCaptureScreen();
+        _destination = const MainPagerScreen();
         _isChecking = false;
       });
     }

@@ -29,7 +29,10 @@ class CameraCaptureScreen extends StatefulWidget {
 }
 
 class _CameraCaptureScreenState extends State<CameraCaptureScreen>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
   CameraController? _controller;
   List<CameraDescription> _cameras = [];
   bool _isInitialized = false;
@@ -382,6 +385,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final isOnline = SyncEngine.instance.isOnline;
     final appState = context.watch<AppState>();
     final pendingExpenses = appState.expenses.length;
