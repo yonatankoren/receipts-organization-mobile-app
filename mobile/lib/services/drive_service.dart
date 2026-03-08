@@ -187,6 +187,105 @@ class DriveService {
     }
   }
 
+  /// Delete a file and remove any parent folders that become empty.
+  /// Walks up the folder chain (category → month) and deletes each empty
+  /// folder, but never deletes the root expenses folder.
+  /// Idempotent: succeeds silently if the file is already gone.
+  Future<void> deleteFileAndCleanupFolders(String fileId) async {
+    final client = await AuthService.instance.getAuthenticatedClient();
+    if (client == null) {
+      throw Exception('Not authenticated — cannot delete from Drive');
+    }
+
+    final rootFolderId = StorageConfigService.instance.receiptsRootFolderId;
+
+    try {
+      final driveApi = drive.DriveApi(client);
+
+      // Resolve the file's parent (category folder) before deleting it.
+      String? categoryFolderId;
+      try {
+        final file = await driveApi.files.get(
+          fileId,
+          $fields: 'parents',
+        ) as drive.File;
+        categoryFolderId = file.parents?.firstOrNull;
+      } on drive.DetailedApiRequestError catch (e) {
+        if (e.status == 404) {
+          debugPrint('Drive: file $fileId already gone — nothing to clean up');
+          return;
+        }
+        rethrow;
+      }
+
+      // Delete the file itself.
+      try {
+        await driveApi.files.delete(fileId);
+        debugPrint('Drive: deleted file $fileId');
+      } on drive.DetailedApiRequestError catch (e) {
+        if (e.status == 404) {
+          debugPrint('Drive: file $fileId not found (already deleted)');
+        } else {
+          rethrow;
+        }
+      }
+
+      // Walk up and remove empty folders (category, then month).
+      if (categoryFolderId != null) {
+        await _deleteFolderIfEmpty(driveApi, categoryFolderId,
+            protectId: rootFolderId);
+      }
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Delete [folderId] if it contains no children. When deleted, recursively
+  /// check its parent as well. [protectId] is never deleted (the root folder).
+  Future<void> _deleteFolderIfEmpty(
+    drive.DriveApi api,
+    String folderId, {
+    String? protectId,
+  }) async {
+    if (folderId == protectId) return;
+
+    final children = await api.files.list(
+      q: "'$folderId' in parents and trashed = false",
+      spaces: 'drive',
+      $fields: 'files(id)',
+      pageSize: 1,
+    );
+
+    if (children.files != null && children.files!.isNotEmpty) {
+      return;
+    }
+
+    // Grab the folder's own parent before deleting so we can check it next.
+    String? parentId;
+    try {
+      final folder =
+          await api.files.get(folderId, $fields: 'parents') as drive.File;
+      parentId = folder.parents?.firstOrNull;
+    } catch (e) {
+      debugPrint('Drive: could not resolve parent of folder $folderId: $e');
+    }
+
+    try {
+      await api.files.delete(folderId);
+      debugPrint('Drive: deleted empty folder $folderId');
+    } on drive.DetailedApiRequestError catch (e) {
+      if (e.status == 404) {
+        debugPrint('Drive: folder $folderId already gone');
+      } else {
+        rethrow;
+      }
+    }
+
+    if (parentId != null) {
+      await _deleteFolderIfEmpty(api, parentId, protectId: protectId);
+    }
+  }
+
   /// Get a direct web link for the root receipts folder.
   /// Appends ?authuser=EMAIL so the browser opens with the correct Google account.
   Future<String?> getRootFolderLink() async {

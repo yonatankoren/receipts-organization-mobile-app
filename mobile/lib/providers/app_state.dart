@@ -381,10 +381,11 @@ class AppState extends ChangeNotifier {
       // Continue — user chose to delete, don't block on Sheets failure
     }
 
-    // 2. Remove from Google Drive (best-effort)
+    // 2. Remove from Google Drive + clean up empty folders (best-effort)
     if (receipt.driveFileId != null && receipt.driveFileId!.isNotEmpty) {
       try {
-        await DriveService.instance.deleteFile(receipt.driveFileId!);
+        await DriveService.instance
+            .deleteFileAndCleanupFolders(receipt.driveFileId!);
       } catch (e) {
         debugPrint('deleteReceiptFully: drive delete failed: $e');
       }
