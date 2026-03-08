@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/constants.dart';
+import 'auth_service.dart';
 
 class BackendService {
   static final BackendService instance = BackendService._();
@@ -43,8 +44,15 @@ class BackendService {
       throw Exception('Image file not found: $imagePath');
     }
 
+    // Get Google access token for backend authentication
+    final accessToken = await AuthService.instance.getAccessToken();
+    if (accessToken == null) {
+      throw Exception('Not authenticated — please sign in first');
+    }
+
     // Build multipart request
     final request = http.MultipartRequest('POST', uri)
+      ..headers['Authorization'] = 'Bearer $accessToken'
       ..fields['receipt_id'] = receiptId
       ..fields['locale_hint'] = locale
       ..fields['currency_default'] = currencyDefault

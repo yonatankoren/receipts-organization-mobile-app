@@ -47,6 +47,7 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
   Receipt? _receipt;
   bool _isLoading = true;
   bool _isSaving = false;
+  bool _isDeleting = false;
 
   // Controllers for editable fields
   final _merchantController = TextEditingController();
@@ -996,37 +997,199 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
         ],
       ),
       child: SafeArea(
-        child: SizedBox(
-          height: 54,
-          child: ElevatedButton.icon(
-            onPressed: _isSaving ? null : _save,
-            icon: _isSaving
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  )
-                : const Icon(Icons.check, size: 24),
-            label: Text(
-              _isSaving
-                  ? 'שומר...'
-                  : (_isExpenseMode ? 'צרף ושמור' : 'שמור קבלה'),
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-            ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green.shade600,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
-              ),
-            ),
+        child: _isExpenseMode
+            ? _buildSaveButton()
+            : _buildStandardButtons(),
+      ),
+    );
+  }
+
+  /// Expense-linking mode: only save button
+  Widget _buildSaveButton() {
+    return SizedBox(
+      height: 54,
+      child: ElevatedButton.icon(
+        onPressed: _isSaving ? null : _save,
+        icon: _isSaving
+            ? const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              )
+            : const Icon(Icons.check, size: 24),
+        label: Text(
+          _isSaving ? 'שומר...' : 'צרף ושמור',
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+        ),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Colors.green.shade600,
+          foregroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
           ),
         ),
       ),
     );
+  }
+
+  /// Standard receipt view: show save (for un-synced) + delete
+  Widget _buildStandardButtons() {
+    final isSynced = _receipt!.status == ReceiptStatus.synced;
+
+    return SizedBox(
+      height: 54,
+      child: Row(
+        children: [
+          // Delete button — always shown
+          Expanded(
+            child: ElevatedButton.icon(
+              onPressed: (_isDeleting || _isSaving)
+                  ? null
+                  : _confirmDelete,
+              icon: _isDeleting
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.delete_outline, size: 20),
+              label: Text(
+                _isDeleting ? 'מוחק...' : 'מחק קבלה',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w600),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red.shade600,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+            ),
+          ),
+          // Save button — only for un-synced receipts
+          if (!isSynced) ...[
+            const SizedBox(width: 12),
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _isSaving ? null : _save,
+                icon: _isSaving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.check, size: 20),
+                label: Text(
+                  _isSaving ? 'שומר...' : 'שמור קבלה',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w600),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green.shade600,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// Show confirmation dialog before deleting a receipt.
+  Future<void> _confirmDelete() async {
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: Row(
+            children: [
+              Icon(Icons.warning_amber_rounded,
+                  color: Colors.red.shade600, size: 28),
+              const SizedBox(width: 8),
+              const Text('מחיקת קבלה'),
+            ],
+          ),
+          content: const Text(
+            'הקבלה תימחק לצמיתות מהאפליקציה, מהגיליון ב-Google Sheets ומתיקיית הקבלות ב-Google Drive.\n\n'
+            'לא ניתן לשחזר את המידע לאחר המחיקה.',
+            style: TextStyle(fontSize: 16, height: 1.5),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(
+                'ביטול',
+                style: TextStyle(
+                  fontSize: 16,
+                  color: Colors.grey.shade700,
+                ),
+              ),
+            ),
+            ElevatedButton.icon(
+              onPressed: () => Navigator.pop(ctx, true),
+              icon: const Icon(Icons.delete_outline, size: 20),
+              label: const Text('מחק'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red.shade600,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (proceed != true || !mounted) return;
+
+    setState(() => _isDeleting = true);
+    try {
+      final appState = context.read<AppState>();
+      await appState.deleteReceiptFully(_receipt!.id);
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('הקבלה נמחקה בהצלחה'),
+          backgroundColor: Colors.green,
+        ),
+      );
+      Navigator.pop(context); // Go back to the list
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isDeleting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('שגיאה במחיקה: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   void _showImagePreview() {

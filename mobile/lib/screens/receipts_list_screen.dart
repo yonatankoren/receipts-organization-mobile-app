@@ -35,7 +35,7 @@ class _ReceiptsListScreenState extends State<ReceiptsListScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('הקבלות שלי'),
+        title: const Text('קבלות אחרונות'),
         actions: const [],
       ),
       body: Consumer<AppState>(
@@ -44,9 +44,22 @@ class _ReceiptsListScreenState extends State<ReceiptsListScreen> {
             return const Center(child: CircularProgressIndicator());
           }
 
-          final byMonth = appState.receiptsByMonth;
+          // Only show receipts from the last 3 months
+          final cutoff = DateTime.now().subtract(const Duration(days: 90));
+          final recentReceipts = appState.receipts.where(
+            (r) => r.captureTimestamp.isAfter(cutoff),
+          ).toList();
 
-          if (byMonth.isEmpty) {
+          // Group by month
+          final byMonth = <String, List<Receipt>>{};
+          for (final r in recentReceipts) {
+            byMonth.putIfAbsent(r.monthKey, () => []).add(r);
+          }
+          // Sort months descending
+          final sortedMonths = byMonth.keys.toList()
+            ..sort((a, b) => b.compareTo(a));
+
+          if (sortedMonths.isEmpty) {
             return Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -54,7 +67,7 @@ class _ReceiptsListScreenState extends State<ReceiptsListScreen> {
                   Icon(Icons.receipt_long, size: 80, color: Colors.grey.shade300),
                   const SizedBox(height: 16),
                   Text(
-                    'עדיין אין קבלות',
+                    'אין קבלות אחרונות',
                     style: theme.textTheme.titleLarge?.copyWith(
                       color: Colors.grey.shade500,
                     ),
@@ -75,9 +88,9 @@ class _ReceiptsListScreenState extends State<ReceiptsListScreen> {
             onRefresh: () => appState.loadReceipts(),
             child: ListView.builder(
               padding: const EdgeInsets.only(bottom: 16),
-              itemCount: byMonth.length,
+              itemCount: sortedMonths.length,
               itemBuilder: (context, index) {
-                final month = byMonth.keys.elementAt(index);
+                final month = sortedMonths[index];
                 final receipts = byMonth[month]!;
                 return _buildMonthSection(context, month, receipts, theme);
               },

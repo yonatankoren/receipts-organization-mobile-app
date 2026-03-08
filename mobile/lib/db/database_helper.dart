@@ -331,6 +331,46 @@ class DatabaseHelper {
     return maps.map((m) => m['image_path'] as String).toList();
   }
 
+  /// Get synced receipts older than [days] whose images can be cleaned up.
+  /// Returns full Receipt objects so the cleanup service can delete the files.
+  Future<List<Receipt>> getSyncedReceiptsOlderThan(int days) async {
+    final db = await database;
+    final cutoff = DateTime.now()
+        .subtract(Duration(days: days))
+        .millisecondsSinceEpoch;
+    final maps = await db.query(
+      'receipts',
+      where: "status = 'synced' AND capture_timestamp < ?",
+      whereArgs: [cutoff],
+      orderBy: 'capture_timestamp ASC',
+    );
+    return maps.map((m) => Receipt.fromMap(m)).toList();
+  }
+
+  /// Delete all receipt records (+ sync jobs) older than [days].
+  /// Used for the 6-month full cleanup phase.
+  Future<int> deleteReceiptsOlderThan(int days) async {
+    final db = await database;
+    final cutoff = DateTime.now()
+        .subtract(Duration(days: days))
+        .millisecondsSinceEpoch;
+
+    // First delete sync jobs for those receipts
+    await db.rawDelete(
+      "DELETE FROM sync_jobs WHERE receipt_id IN "
+      "(SELECT id FROM receipts WHERE capture_timestamp < ?)",
+      [cutoff],
+    );
+
+    // Then delete the receipts themselves
+    final count = await db.delete(
+      'receipts',
+      where: "capture_timestamp < ?",
+      whereArgs: [cutoff],
+    );
+    return count;
+  }
+
   /// Delete a receipt and its associated sync jobs
   Future<void> deleteReceipt(String receiptId) async {
     final db = await database;

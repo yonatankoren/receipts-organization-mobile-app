@@ -8,6 +8,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
+import 'package:googleapis/sheets/v4.dart' as sheets;
 import '../services/auth_service.dart';
 import '../services/backend_service.dart';
 import '../services/storage_config_service.dart';
@@ -160,6 +161,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
     controller.dispose();
 
     if (result != null && result.isNotEmpty) {
+      // Validate the spreadsheet and check for conflicting tabs before saving
+      if (!mounted) return;
+
+      // Show a loading indicator while checking
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const PopScope(
+          canPop: false,
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      );
+
+      List<String> conflictingTabs;
+      try {
+        conflictingTabs = await _checkForConflictingTabs(result);
+      } catch (e) {
+        if (mounted) {
+          Navigator.of(context).pop(); // dismiss loading
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('לא ניתן לגשת לגיליון — בדקו את המזהה ונסו שוב.'),
+            ),
+          );
+        }
+        return;
+      }
+
+      if (!mounted) return;
+      Navigator.of(context).pop(); // dismiss loading
+
+      // If conflicting tabs found, warn the user
+      if (conflictingTabs.isNotEmpty) {
+        final proceed = await _showTabConflictWarning(conflictingTabs);
+        if (proceed != true) return; // user cancelled
+      }
+
       await config.setSpreadsheetConfig(
         spreadsheetId: result,
         spreadsheetName: AppConstants.spreadsheetDefaultName,
@@ -174,6 +212,124 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       }
     }
+  }
+
+  /// Check if a spreadsheet already has tabs that look like app-managed tabs
+  /// (e.g. "הוצאות 2025", "סיכום 2026").
+  /// Returns the list of matching tab names, or an empty list if none found.
+  /// Throws on API errors (invalid ID, no access, etc.).
+  Future<List<String>> _checkForConflictingTabs(String spreadsheetId) async {
+    final client = await AuthService.instance.getAuthenticatedClient();
+    if (client == null) {
+      throw Exception('Not authenticated');
+    }
+
+    try {
+      final api = sheets.SheetsApi(client);
+      final spreadsheet = await api.spreadsheets.get(spreadsheetId);
+
+      final yearPattern = RegExp(r'^\d{4}$');
+      final expensesPrefix = AppConstants.expensesTabPrefix;
+      final totalsPrefix = AppConstants.totalsTabPrefix;
+
+      final conflicting = <String>[];
+      for (final sheet in spreadsheet.sheets ?? <sheets.Sheet>[]) {
+        final title = sheet.properties?.title ?? '';
+        // Check for "הוצאות YYYY" or "סיכום YYYY"
+        for (final prefix in [expensesPrefix, totalsPrefix]) {
+          if (title.startsWith(prefix) && title.length > prefix.length) {
+            final suffix = title.substring(prefix.length).trim();
+            if (yearPattern.hasMatch(suffix)) {
+              conflicting.add(title);
+            }
+          }
+        }
+      }
+
+      return conflicting;
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Show a warning dialog listing conflicting tabs and let the user decide.
+  /// Returns `true` if the user chose to proceed, `false`/`null` otherwise.
+  Future<bool?> _showTabConflictWarning(List<String> conflictingTabs) {
+    final tabList = conflictingTabs.map((t) => '• $t').join('\n');
+
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.orange.shade700, size: 28),
+            const SizedBox(width: 8),
+            const Expanded(
+              child: Text(
+                'גיליון עם תוכן קיים',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'בגיליון שבחרת נמצאו לשוניות שהאפליקציה משתמשת בהן לניהול הוצאות:',
+              textDirection: TextDirection.rtl,
+              style: TextStyle(fontSize: 14, height: 1.5),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.orange.shade200),
+              ),
+              child: Text(
+                tabList,
+                textDirection: TextDirection.rtl,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.orange.shade900,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'אם תמשיך, קבלות חדשות יתווספו לתוך הלשוניות הקיימות ועלולות להתערבב עם התוכן שכבר שם.\n\nאם אינך בטוח, מומלץ ליצור גיליון חדש.',
+              textDirection: TextDirection.rtl,
+              style: TextStyle(fontSize: 14, height: 1.5),
+            ),
+          ],
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('ביטול'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orange.shade600,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            child: const Text('המשך בכל זאת'),
+          ),
+        ],
+      ),
+    );
   }
 
   String _formatBytes(int bytes) {

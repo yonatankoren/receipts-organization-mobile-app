@@ -23,6 +23,84 @@ class SheetsService {
   static final SheetsService instance = SheetsService._();
   SheetsService._();
 
+  // ─────────────────── Delete receipt row ─────────────────────
+
+  /// Delete a receipt's row from the spreadsheet by searching for its
+  /// Drive link in column F.  Idempotent: succeeds silently if the
+  /// row is not found.
+  Future<void> deleteReceiptRow(Receipt receipt) async {
+    final spreadsheetId = getSpreadsheetId();
+    if (spreadsheetId == null || spreadsheetId.isEmpty) return;
+
+    final driveLink = receipt.driveFileLink;
+    if (driveLink == null || driveLink.isEmpty) return;
+
+    final client = await AuthService.instance.getAuthenticatedClient();
+    if (client == null) {
+      throw Exception('Not authenticated — cannot delete from Sheets');
+    }
+
+    try {
+      final api = sheets.SheetsApi(client);
+      final year = receipt.receiptYear;
+      final tabName = _expensesTabName(year);
+
+      // 1. Read column F (formulas) to find the matching row
+      final resp = await api.spreadsheets.values.get(
+        spreadsheetId,
+        '$tabName!F:F',
+        valueRenderOption: 'FORMULA',
+      );
+      if (resp.values == null) return;
+
+      int? targetRow; // 0-indexed row number
+      for (int i = 0; i < resp.values!.length; i++) {
+        final row = resp.values![i];
+        if (row.isNotEmpty) {
+          final cell = row[0].toString();
+          if (cell == driveLink || cell.contains(driveLink)) {
+            targetRow = i;
+            break;
+          }
+        }
+      }
+
+      if (targetRow == null) {
+        debugPrint('Sheets: receipt row not found in "$tabName", skipping');
+        return;
+      }
+
+      // 2. Get sheet ID and delete the row
+      final sheetId = await _getSheetId(api, spreadsheetId, tabName);
+
+      await api.spreadsheets.batchUpdate(
+        sheets.BatchUpdateSpreadsheetRequest(requests: [
+          sheets.Request(
+            deleteDimension: sheets.DeleteDimensionRequest(
+              range: sheets.DimensionRange(
+                sheetId: sheetId,
+                dimension: 'ROWS',
+                startIndex: targetRow,
+                endIndex: targetRow + 1,
+              ),
+            ),
+          ),
+        ]),
+        spreadsheetId,
+      );
+
+      debugPrint(
+        'Sheets: deleted row ${targetRow + 1} from "$tabName" '
+        'for receipt ${receipt.id}',
+      );
+    } catch (e) {
+      debugPrint('Sheets: failed to delete receipt row: $e');
+      rethrow;
+    } finally {
+      client.close();
+    }
+  }
+
   // ────────────────────────── Settings ──────────────────────────
 
   /// Get the spreadsheet ID from StorageConfigService.

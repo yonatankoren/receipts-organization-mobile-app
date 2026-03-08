@@ -95,11 +95,6 @@ class AppConstants {
     'https://www.googleapis.com/auth/spreadsheets',
   ];
 
-  // --- Google Picker API Key ---
-  // Create a Browser API key in Google Cloud Console > Credentials.
-  // Enable the "Picker API" in APIs & Services.
-  static const String pickerApiKey = 'AIzaSyCc9350vS4pNdvfkfJI-M-zAew4RidPZxM';
-
   // --- Currency default ---
   static const String defaultCurrency = 'ILS';
   static const String defaultLocale = 'he-IL';

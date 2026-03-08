@@ -163,6 +163,30 @@ class DriveService {
     }
   }
 
+  /// Delete a file from Google Drive by its file ID.
+  /// Idempotent: succeeds silently if the file is already gone.
+  Future<void> deleteFile(String fileId) async {
+    final client = await AuthService.instance.getAuthenticatedClient();
+    if (client == null) {
+      throw Exception('Not authenticated — cannot delete from Drive');
+    }
+
+    try {
+      final driveApi = drive.DriveApi(client);
+      await driveApi.files.delete(fileId);
+      debugPrint('Drive: deleted file $fileId');
+    } on drive.DetailedApiRequestError catch (e) {
+      if (e.status == 404) {
+        // File already gone — idempotent success
+        debugPrint('Drive: file $fileId not found (already deleted)');
+      } else {
+        rethrow;
+      }
+    } finally {
+      client.close();
+    }
+  }
+
   /// Get a direct web link for the root receipts folder.
   /// Appends ?authuser=EMAIL so the browser opens with the correct Google account.
   Future<String?> getRootFolderLink() async {

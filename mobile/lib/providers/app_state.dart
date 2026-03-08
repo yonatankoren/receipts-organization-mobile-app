@@ -8,7 +8,9 @@ import '../db/database_helper.dart';
 import '../models/expense.dart';
 import '../models/receipt.dart';
 import '../models/sync_job.dart';
+import '../services/drive_service.dart';
 import '../services/image_service.dart';
+import '../services/sheets_service.dart';
 import '../services/sync_engine.dart';
 import '../services/backend_service.dart';
 import '../models/receipt_validation_exception.dart';
@@ -360,6 +362,50 @@ class AppState extends ChangeNotifier {
 
     notifyListeners();
     debugPrint('AppState: confirmed expense receipt, expense=$expenseId deleted');
+  }
+
+  /// Delete a receipt fully: local image + DB record + Drive file + Sheets row.
+  /// Shows progress via a callback and returns true on success.
+  /// Throws on fatal errors so callers can show error UI.
+  Future<void> deleteReceiptFully(String receiptId) async {
+    final receipt = await _db.getReceipt(receiptId);
+    if (receipt == null) {
+      throw Exception('Receipt not found');
+    }
+
+    // 1. Remove from Google Sheets (best-effort)
+    try {
+      await SheetsService.instance.deleteReceiptRow(receipt);
+    } catch (e) {
+      debugPrint('deleteReceiptFully: sheets delete failed: $e');
+      // Continue — user chose to delete, don't block on Sheets failure
+    }
+
+    // 2. Remove from Google Drive (best-effort)
+    if (receipt.driveFileId != null && receipt.driveFileId!.isNotEmpty) {
+      try {
+        await DriveService.instance.deleteFile(receipt.driveFileId!);
+      } catch (e) {
+        debugPrint('deleteReceiptFully: drive delete failed: $e');
+      }
+    }
+
+    // 3. Delete local image
+    try {
+      final file = File(receipt.imagePath);
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (e) {
+      debugPrint('deleteReceiptFully: image delete failed: $e');
+    }
+
+    // 4. Delete from SQLite (receipt + sync jobs)
+    await _db.deleteReceipt(receiptId);
+    _receipts.removeWhere((r) => r.id == receiptId);
+    notifyListeners();
+
+    debugPrint('deleteReceiptFully: fully deleted receipt $receiptId');
   }
 
   /// Cancel expense receipt — delete the receipt + image, expense stays.

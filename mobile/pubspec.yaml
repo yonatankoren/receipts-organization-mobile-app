@@ -41,6 +41,10 @@ dependencies:
   # Networking & connectivity
   connectivity_plus: ^6.1.0
   
+  # Firebase (crash reporting)
+  firebase_core: ^3.12.1
+  firebase_crashlytics: ^4.3.2
+
   # Utils
   uuid: ^4.5.1
   shared_preferences: ^2.3.5

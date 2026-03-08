@@ -89,5 +89,15 @@ class AuthService extends ChangeNotifier {
     final auth = await account.authentication;
     return auth.accessToken;
   }
+
+  /// Get Google ID token for backend authentication.
+  /// The backend verifies this JWT to ensure only signed-in app users
+  /// can call the processing endpoints.
+  Future<String?> getIdToken() async {
+    final account = _currentUser ?? await _googleSignIn.signInSilently();
+    if (account == null) return null;
+    final auth = await account.authentication;
+    return auth.idToken;
+  }
 }
 
