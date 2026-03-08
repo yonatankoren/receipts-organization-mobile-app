@@ -254,6 +254,24 @@ class SyncEngine extends ChangeNotifier {
       receiptId: receipt.id,
     );
 
+    // Check for validation failure from the backend
+    final status = result['status'] as String? ?? 'ok';
+    if (status != 'ok') {
+      final reason = result['reason'] as String? ?? 'unknown';
+      final messageHe = result['message_he'] as String? ?? 'שגיאה בעיבוד התמונה';
+      debugPrint(
+        'SyncEngine: validation failed for ${job.receiptId}: $reason — $messageHe',
+      );
+      // Mark receipt as error with the validation reason
+      final errorUpdated = receipt.copyWith(
+        status: ReceiptStatus.error,
+        rawOcrText: 'VALIDATION_FAILED:$reason',
+      );
+      await _db.updateReceipt(errorUpdated);
+      // Don't retry — this is a permanent failure for this image
+      return;
+    }
+
     // Extract confidence scores
     final confMap = <String, double>{};
     if (result['confidence'] is Map) {

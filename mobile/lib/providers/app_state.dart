@@ -11,6 +11,7 @@ import '../models/sync_job.dart';
 import '../services/image_service.dart';
 import '../services/sync_engine.dart';
 import '../services/backend_service.dart';
+import '../models/receipt_validation_exception.dart';
 
 class AppState extends ChangeNotifier {
   final DatabaseHelper _db = DatabaseHelper.instance;
@@ -87,6 +88,10 @@ class AppState extends ChangeNotifier {
   /// Try to process a receipt immediately (for online quick flow).
   /// This sends to the backend and returns parsed data.
   /// Falls back to returning null if offline or error.
+  ///
+  /// Throws [ReceiptValidationException] if the backend rejects the image
+  /// due to quality/content validation (blurry, too dark, not a receipt, etc.).
+  /// Callers should catch this and show the appropriate user-facing UI.
   Future<Receipt?> processReceiptNow(String receiptId) async {
     try {
       final receipt = await _db.getReceipt(receiptId);
@@ -101,6 +106,23 @@ class AppState extends ChangeNotifier {
         imagePath: receipt.imagePath,
         receiptId: receipt.id,
       );
+
+      // Check for validation failure from the backend
+      final status = result['status'] as String? ?? 'ok';
+      if (status != 'ok') {
+        final reason = result['reason'] as String? ?? 'unknown';
+        final messageHe = result['message_he'] as String? ?? 'שגיאה בעיבוד התמונה. נסה שוב.';
+
+        // Clean up the receipt since validation failed
+        await _cleanupFailedReceipt(receiptId);
+
+        throw ReceiptValidationException(
+          status: status,
+          reason: reason,
+          messageHe: messageHe,
+          receiptId: receiptId,
+        );
+      }
 
       // Extract confidence scores
       final confMap = <String, double>{};
@@ -143,10 +165,41 @@ class AppState extends ChangeNotifier {
       notifyListeners();
 
       return updated;
+    } on ReceiptValidationException {
+      rethrow; // Let callers handle validation failures
     } catch (e) {
       debugPrint('AppState: immediate processing failed: $e');
       return await _db.getReceipt(receiptId);
     }
+  }
+
+  /// Clean up a receipt that failed validation — remove image and DB record.
+  Future<void> _cleanupFailedReceipt(String receiptId) async {
+    final receipt = await _db.getReceipt(receiptId);
+    if (receipt != null) {
+      // Delete the local image
+      try {
+        final file = File(receipt.imagePath);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      } catch (e) {
+        debugPrint('AppState: failed to delete image for failed receipt: $e');
+      }
+
+      // Delete associated sync jobs
+      final jobs = await _db.getJobsForReceipt(receiptId);
+      for (final job in jobs) {
+        job.status = JobStatus.completed;
+        await _db.updateJob(job);
+      }
+
+      // Delete receipt from DB
+      await _db.deleteReceipt(receiptId);
+      _receipts.removeWhere((r) => r.id == receiptId);
+      notifyListeners();
+    }
+    debugPrint('AppState: cleaned up failed-validation receipt $receiptId');
   }
 
   /// Save user edits from the review screen.

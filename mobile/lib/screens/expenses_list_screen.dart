@@ -12,6 +12,7 @@ import 'package:provider/provider.dart';
 import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
 import '../models/expense.dart';
+import '../models/receipt_validation_exception.dart';
 import '../providers/app_state.dart';
 import 'review_and_fix_screen.dart';
 
@@ -397,6 +398,11 @@ class _ExpensesListScreenState extends State<ExpensesListScreen> {
           ),
         ),
       );
+    } on ReceiptValidationException catch (e) {
+      if (mounted) {
+        navigator.pop(); // Dismiss overlay
+        _showValidationFailureDialog(e, expense);
+      }
     } catch (e) {
       if (mounted) {
         navigator.pop(); // Dismiss overlay
@@ -405,6 +411,91 @@ class _ExpensesListScreenState extends State<ExpensesListScreen> {
         );
       }
     }
+  }
+
+  /// Show a user-friendly dialog when the backend rejects the image.
+  void _showValidationFailureDialog(
+    ReceiptValidationException error,
+    Expense expense,
+  ) {
+    final IconData icon;
+    final Color iconColor;
+
+    switch (error.reason) {
+      case 'blurry_image':
+        icon = Icons.blur_on;
+        iconColor = Colors.orange;
+        break;
+      case 'image_too_dark':
+        icon = Icons.brightness_low;
+        iconColor = Colors.blueGrey;
+        break;
+      case 'image_too_small':
+        icon = Icons.photo_size_select_small;
+        iconColor = Colors.red;
+        break;
+      case 'non_receipt_image':
+        icon = Icons.receipt_long;
+        iconColor = Colors.red;
+        break;
+      default:
+        icon = Icons.error_outline;
+        iconColor = Colors.orange;
+    }
+
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                color: iconColor.withValues(alpha: 0.1),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, color: iconColor, size: 40),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              error.messageHe,
+              textAlign: TextAlign.center,
+              textDirection: TextDirection.rtl,
+              style: const TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w500,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              // Re-open the attach receipt flow
+              _attachReceipt(context, expense);
+            },
+            icon: const Icon(Icons.camera_alt, size: 20),
+            label: const Text('צלם שוב'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green.shade600,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Capture a photo using the device camera

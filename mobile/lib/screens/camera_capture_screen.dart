@@ -12,6 +12,7 @@ import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../models/receipt_validation_exception.dart';
 import '../providers/app_state.dart';
 import '../services/drive_service.dart';
 import '../services/sync_engine.dart';
@@ -168,7 +169,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
   /// After capturing or picking an image:
   /// 1. Save locally & create receipt
   /// 2. Try immediate processing
-  /// 3. Navigate to review screen
+  /// 3. Navigate to review screen (or show validation failure)
   Future<void> _handleCapturedImage(String imagePath) async {
     final appState = context.read<AppState>();
 
@@ -194,6 +195,11 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
           ),
         ),
       );
+    } on ReceiptValidationException catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop(); // Remove overlay
+        _showValidationFailureDialog(e);
+      }
     } catch (e) {
       if (mounted) {
         Navigator.of(context).pop(); // Remove overlay
@@ -202,6 +208,87 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
         );
       }
     }
+  }
+
+  /// Show a user-friendly dialog when the backend rejects the image.
+  void _showValidationFailureDialog(ReceiptValidationException error) {
+    final IconData icon;
+    final Color iconColor;
+
+    switch (error.reason) {
+      case 'blurry_image':
+        icon = Icons.blur_on;
+        iconColor = Colors.orange;
+        break;
+      case 'image_too_dark':
+        icon = Icons.brightness_low;
+        iconColor = Colors.blueGrey;
+        break;
+      case 'image_too_small':
+        icon = Icons.photo_size_select_small;
+        iconColor = Colors.red;
+        break;
+      case 'non_receipt_image':
+        icon = Icons.receipt_long;
+        iconColor = Colors.red;
+        break;
+      default:
+        icon = Icons.error_outline;
+        iconColor = Colors.orange;
+    }
+
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                color: iconColor.withValues(alpha: 0.1),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, color: iconColor, size: 40),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              error.messageHe,
+              textAlign: TextAlign.center,
+              textDirection: TextDirection.rtl,
+              style: const TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w500,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              // Return to camera — user is already on the camera screen
+            },
+            icon: const Icon(Icons.camera_alt, size: 20),
+            label: const Text('צלם שוב'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green.shade600,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showProcessingOverlay() {
