@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../db/database_helper.dart';
 import '../utils/constants.dart';
 import 'auth_service.dart';
+import 'drive_service.dart';
 import 'sheets_service.dart';
 import 'storage_config_service.dart';
 
@@ -187,7 +188,7 @@ class CustomCategoryService {
 
       for (final mf in monthFolders.files!) {
         final catSearch = await api.files.list(
-          q: "name = '$oldName' and '${mf.id}' in parents "
+          q: "name = '${DriveService.escQ(oldName)}' and '${mf.id}' in parents "
               "and mimeType = 'application/vnd.google-apps.folder' "
               "and trashed = false",
           spaces: 'drive',

@@ -52,11 +52,10 @@ class _StatisticsScreenState extends State<StatisticsScreen>
     super.build(context);
     final appState = context.watch<AppState>();
 
-    // Only include finalised receipts — these are the ones in the spreadsheet.
+    // Only include fully-synced receipts — data is in Drive + Spreadsheet.
     final receipts = appState.receipts
         .where((r) =>
-            (r.status == ReceiptStatus.reviewed ||
-                r.status == ReceiptStatus.synced) &&
+            r.status == ReceiptStatus.synced &&
             r.totalAmount != null &&
             r.category != null &&
             r.category!.isNotEmpty)

@@ -16,6 +16,10 @@ class DriveService {
   static final DriveService instance = DriveService._();
   DriveService._();
 
+  /// Escape a value for use inside single-quoted Drive API query strings.
+  static String escQ(String v) =>
+      v.replaceAll(r'\', r'\\').replaceAll("'", r"\'");
+
   /// Upload a receipt image to Drive.
   /// Returns (fileId, webViewLink) or throws on failure.
   ///
@@ -62,7 +66,7 @@ class DriveService {
 
       // 3. Check if file already exists (idempotency)
       final existing = await driveApi.files.list(
-        q: "name = '$fileName' and '$categoryFolderId' in parents and trashed = false",
+        q: "name = '${escQ(fileName)}' and '$categoryFolderId' in parents and trashed = false",
         spaces: 'drive',
         $fields: 'files(id, webViewLink)',
       );
@@ -113,7 +117,7 @@ class DriveService {
   ) async {
     // Search for existing folder
     final search = await api.files.list(
-      q: "name = '$folderName' and '$parentId' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+      q: "name = '${escQ(folderName)}' and '$parentId' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
       spaces: 'drive',
       $fields: 'files(id)',
     );
@@ -146,7 +150,7 @@ class DriveService {
 
       // Find month folder directly under the stored root folder ID
       final monthSearch = await driveApi.files.list(
-        q: "name = '$monthFolder' and '$rootFolderId' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+        q: "name = '${escQ(monthFolder)}' and '$rootFolderId' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
         spaces: 'drive',
         $fields: 'files(id, webViewLink)',
       );
