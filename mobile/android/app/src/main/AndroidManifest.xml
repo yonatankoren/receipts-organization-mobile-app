@@ -59,16 +59,32 @@
             </intent-filter>
         </activity>
 
+        <!-- FileProvider for sharing exported ZIP files -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
     </application>
 
-    <!-- Required for camera package to query activities -->
+    <!-- Required for camera package and share intents -->
     <queries>
         <intent>
             <action android:name="android.media.action.IMAGE_CAPTURE" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="application/zip" />
+        </intent>
+        <package android:name="com.google.android.gm" />
     </queries>
 </manifest>
 

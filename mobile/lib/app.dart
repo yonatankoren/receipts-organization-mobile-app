@@ -12,6 +12,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 import 'providers/app_state.dart';
+import 'services/accountant_config_service.dart';
 import 'services/auth_service.dart';
 import 'services/storage_config_service.dart';
 import 'services/sync_engine.dart';
@@ -36,6 +37,7 @@ class ReceiptsApp extends StatelessWidget {
         ChangeNotifierProvider.value(value: AuthService.instance),
         ChangeNotifierProvider.value(value: SyncEngine.instance),
         ChangeNotifierProvider.value(value: StorageConfigService.instance),
+        ChangeNotifierProvider.value(value: AccountantConfigService.instance),
       ],
       child: MaterialApp(
         navigatorKey: rootNavigatorKey,

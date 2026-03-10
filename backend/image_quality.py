@@ -137,4 +137,3 @@ def _result(
             "avg_brightness": round(avg_brightness, 2),
         },
     }
-

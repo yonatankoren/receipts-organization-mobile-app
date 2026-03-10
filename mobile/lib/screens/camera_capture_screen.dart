@@ -23,6 +23,7 @@ import '../widgets/loading_indicator.dart';
 import 'review_and_fix_screen.dart';
 import 'receipts_list_screen.dart';
 import 'expenses_list_screen.dart';
+import 'export_months_screen.dart';
 import 'settings_screen.dart';
 
 class CameraCaptureScreen extends StatefulWidget {
@@ -45,6 +46,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
   String? _error;
   bool _wasOnline = true;
   bool _isImportMenuOpen = false;
+  bool _isDriveMenuOpen = false;
 
   @override
   void initState() {
@@ -549,36 +551,33 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
                       ),
                     ),
 
-                    // Drive folder (disabled when offline)
-                    _buildBottomButton(
-                      icon: Icons.folder_open,
-                      label: 'Drive',
-                      onTap: isOnline ? _openDriveFolder : null,
-                      disabled: !isOnline,
-                    ),
+                    // Drive folder with expansion menu
+                    _buildDriveButton(isOnline),
                   ],
                 ),
               ),
             ),
           ),
 
-          // Import menu overlay (backdrop + floating options)
-          if (_isImportMenuOpen) ...[
-            // Dim backdrop — closes menu on tap
+          // Menu overlays (backdrop + floating options)
+          if (_isImportMenuOpen || _isDriveMenuOpen) ...[
+            // Dim backdrop — closes any open menu on tap
             Positioned.fill(
               child: GestureDetector(
-                onTap: () => setState(() => _isImportMenuOpen = false),
+                onTap: () => setState(() {
+                  _isImportMenuOpen = false;
+                  _isDriveMenuOpen = false;
+                }),
                 child: Container(color: Colors.black54),
               ),
             ),
-            // Menu items directly above the "+" button (RTL: first Row item is on the RIGHT)
+            // Import menu items above the "+" button
+            if (_isImportMenuOpen)
             Builder(builder: (context) {
               final screenWidth = MediaQuery.of(context).size.width;
               final safeBottom = MediaQuery.of(context).viewPadding.bottom;
               final availableWidth = screenWidth - 24; // 12px padding each side
-              // 5 items: add(52) + expenses(52) + camera(80) + receipts(52) + drive(52) = 288
               final gap = (availableWidth - 288) / 6;
-              // In RTL, first item is rightmost. Icon right edge distance from screen right:
               final menuRight = 12.0 + gap;
               final baseBottom = safeBottom + 24 + 5 + 18 + 52 + 8;
 
@@ -596,8 +595,6 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
                       child: child,
                     ),
                   ),
-                  // Force LTR so icon is on the RIGHT, text on the LEFT —
-                  // matching the "+" button position on the right side.
                   child: Directionality(
                     textDirection: TextDirection.ltr,
                     child: Column(
@@ -620,6 +617,64 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
                       ),
                     ],
                   ),
+                  ),
+                ),
+              );
+            }),
+            // Drive menu items above the Drive button
+            if (_isDriveMenuOpen)
+            Builder(builder: (context) {
+              final screenWidth = MediaQuery.of(context).size.width;
+              final safeBottom = MediaQuery.of(context).viewPadding.bottom;
+              final availableWidth = screenWidth - 24;
+              final gap = (availableWidth - 288) / 6;
+              final menuLeft = 12.0 + gap;
+              final baseBottom = safeBottom + 24 + 5 + 18 + 52 + 8;
+
+              return Positioned(
+                bottom: baseBottom,
+                left: menuLeft,
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween(begin: 0.0, end: 1.0),
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  builder: (context, value, child) => Opacity(
+                    opacity: value,
+                    child: Transform.translate(
+                      offset: Offset(0, 16 * (1 - value)),
+                      child: child,
+                    ),
+                  ),
+                  child: Directionality(
+                    textDirection: TextDirection.ltr,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _buildDriveMenuItem(
+                          icon: Icons.upload_file_outlined,
+                          label: 'ייצא',
+                          onTap: () {
+                            setState(() => _isDriveMenuOpen = false);
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const ExportMonthsScreen(),
+                              ),
+                            );
+                          },
+                        ),
+                        const SizedBox(height: 10),
+                        _buildDriveMenuItem(
+                          icon: Icons.open_in_new,
+                          label: 'פתח בדרייב',
+                          onTap: () {
+                            setState(() => _isDriveMenuOpen = false);
+                            _openDriveFolder();
+                          },
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               );
@@ -665,7 +720,10 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
   Widget _buildAddButton(bool isOnline) {
     return GestureDetector(
       onTap: isOnline
-          ? () => setState(() => _isImportMenuOpen = !_isImportMenuOpen)
+          ? () => setState(() {
+                _isImportMenuOpen = !_isImportMenuOpen;
+                if (_isImportMenuOpen) _isDriveMenuOpen = false;
+              })
           : null,
       child: Opacity(
         opacity: isOnline ? 1.0 : 0.4,
@@ -728,6 +786,79 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
               borderRadius: BorderRadius.circular(16),
             ),
             child: Icon(icon, color: Colors.white, size: 26),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ─── Drive expansion menu ────────────────────────────────
+
+  Widget _buildDriveButton(bool isOnline) {
+    return GestureDetector(
+      onTap: isOnline
+          ? () => setState(() {
+                _isDriveMenuOpen = !_isDriveMenuOpen;
+                if (_isDriveMenuOpen) _isImportMenuOpen = false;
+              })
+          : null,
+      child: Opacity(
+        opacity: isOnline ? 1.0 : 0.4,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                color: _isDriveMenuOpen ? Colors.white24 : Colors.black38,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: const Icon(
+                Icons.folder_open,
+                color: Colors.white,
+                size: 26,
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Drive',
+              style: TextStyle(color: Colors.white70, fontSize: 11),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDriveMenuItem({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        textDirection: TextDirection.ltr,
+        children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              color: Colors.black38,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Icon(icon, color: Colors.white, size: 26),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+            ),
           ),
         ],
       ),

@@ -57,6 +57,10 @@ dependencies:
   fl_chart: ^1.1.1
   receive_sharing_intent: ^1.8.1
 
+  # Export / Share
+  archive: ^4.0.0
+  share_plus: ^10.0.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

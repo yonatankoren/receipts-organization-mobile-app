@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:googleapis/sheets/v4.dart' as sheets;
 import '../services/auth_service.dart';
+import '../services/accountant_config_service.dart';
 import '../services/backend_service.dart';
 import '../services/storage_config_service.dart';
 import '../services/sync_engine.dart';
@@ -31,10 +32,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _storageUsage = '';
   bool _backendHealthy = false;
 
+  final _accountantEmailController = TextEditingController();
+  final _ccEmailsController = TextEditingController();
+
   @override
   void initState() {
     super.initState();
+    _accountantEmailController.text =
+        AccountantConfigService.instance.accountantEmail ?? '';
+    _ccEmailsController.text =
+        AccountantConfigService.instance.ccEmails.join(', ');
     _loadSettings();
+  }
+
+  @override
+  void dispose() {
+    _accountantEmailController.dispose();
+    _ccEmailsController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadSettings() async {
@@ -510,6 +525,71 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         fontSize: 12,
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+
+                // Accountant Section
+                _buildSectionHeader(theme, 'רואה חשבון', Icons.mail_outline),
+                Card(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        TextField(
+                          controller: _accountantEmailController,
+                          decoration: InputDecoration(
+                            labelText: 'מייל רואה חשבון',
+                            hintText: 'accountant@example.com',
+                            prefixIcon: const Icon(Icons.email_outlined),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          keyboardType: TextInputType.emailAddress,
+                          textDirection: TextDirection.ltr,
+                          onChanged: (value) {
+                            AccountantConfigService.instance
+                                .setAccountantEmail(value);
+                          },
+                        ),
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: _ccEmailsController,
+                          decoration: InputDecoration(
+                            labelText: 'העתק (CC)',
+                            hintText: 'כתובות נוספות, מופרדות בפסיק',
+                            prefixIcon: const Icon(Icons.people_outline),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          keyboardType: TextInputType.emailAddress,
+                          textDirection: TextDirection.ltr,
+                          onChanged: (value) {
+                            final emails = value
+                                .split(',')
+                                .map((e) => e.trim())
+                                .where((e) => e.isNotEmpty)
+                                .toList();
+                            AccountantConfigService.instance
+                                .setCcEmails(emails);
+                          },
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          'הגדר מייל של רואה החשבון כדי לשלוח קבלות בקלות דרך Gmail.',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                          textDirection: TextDirection.rtl,
+                        ),
+                      ],
                     ),
                   ),
                 ),
