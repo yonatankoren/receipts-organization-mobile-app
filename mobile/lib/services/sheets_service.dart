@@ -23,6 +23,23 @@ class SheetsService {
   static final SheetsService instance = SheetsService._();
   SheetsService._();
 
+  // ── Per-operation metadata cache to avoid redundant spreadsheets.get() ──
+  sheets.Spreadsheet? _cachedMetadata;
+
+  /// Return cached spreadsheet metadata, or fetch & cache it.
+  Future<sheets.Spreadsheet> _getSpreadsheetMetadata(
+    sheets.SheetsApi api,
+    String spreadsheetId,
+  ) async {
+    return _cachedMetadata ??= await api.spreadsheets.get(spreadsheetId);
+  }
+
+  /// Clear the metadata cache (call after creating/deleting tabs,
+  /// and at the start/end of each top-level operation).
+  void _invalidateMetadataCache() {
+    _cachedMetadata = null;
+  }
+
   // ─────────────────── Delete receipt row ─────────────────────
 
   /// Delete a receipt's row from the spreadsheet by searching for its
@@ -113,6 +130,7 @@ class SheetsService {
       debugPrint('Sheets: failed to delete receipt row: $e');
       rethrow;
     } finally {
+      _invalidateMetadataCache();
       client.close();
     }
   }
@@ -221,6 +239,7 @@ class SheetsService {
         '(month ${receipt.sheetsMonth})',
       );
     } finally {
+      _invalidateMetadataCache();
       client.close();
     }
   }
@@ -234,7 +253,7 @@ class SheetsService {
     String spreadsheetId,
     String tabName,
   ) async {
-    final spreadsheet = await api.spreadsheets.get(spreadsheetId);
+    final spreadsheet = await _getSpreadsheetMetadata(api, spreadsheetId);
     final exists = spreadsheet.sheets?.any(
       (s) => s.properties?.title == tabName,
     ) ?? false;
@@ -274,6 +293,7 @@ class SheetsService {
     } catch (e) {
       debugPrint('Sheets: tab "$tabName" may already exist: $e');
     }
+    _invalidateMetadataCache(); // new tab created → stale cache
 
     // Write headers + formatting
     await _writeHeaders(api, spreadsheetId, tabName);
@@ -376,7 +396,7 @@ class SheetsService {
     String totalsTabName,
   ) async {
     // Check if the tab already exists
-    final spreadsheet = await api.spreadsheets.get(spreadsheetId);
+    final spreadsheet = await _getSpreadsheetMetadata(api, spreadsheetId);
     final exists = spreadsheet.sheets?.any(
       (s) => s.properties?.title == totalsTabName,
     ) ?? false;
@@ -399,6 +419,7 @@ class SheetsService {
       debugPrint('Sheets: totals tab "$totalsTabName" might already exist: $e');
       return;
     }
+    _invalidateMetadataCache(); // new tab created → stale cache
 
     // Get the new sheet's ID
     final totalsSheetId = await _getSheetId(api, spreadsheetId, totalsTabName);
@@ -1086,7 +1107,7 @@ class SheetsService {
     String spreadsheetId,
     String tabName,
   ) async {
-    final spreadsheet = await api.spreadsheets.get(spreadsheetId);
+    final spreadsheet = await _getSpreadsheetMetadata(api, spreadsheetId);
     for (final sheet in spreadsheet.sheets ?? <sheets.Sheet>[]) {
       if (sheet.properties?.title == tabName) {
         return sheet.properties!.sheetId ?? 0;
