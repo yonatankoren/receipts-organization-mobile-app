@@ -153,13 +153,13 @@ class SyncEngine extends ChangeNotifier {
         if (job == null) break; // No more ready jobs
 
         await _executeJob(job);
-        await _refreshPendingCount();
       }
     } catch (e) {
       debugPrint('SyncEngine: error in job loop: $e');
     } finally {
       _isRunning = false;
       _currentActivity = null;
+      await _refreshPendingCount(); // Single refresh after all jobs
       notifyListeners();
     }
   }
@@ -195,11 +195,11 @@ class SyncEngine extends ChangeNotifier {
       await _db.updateJob(job);
       debugPrint('SyncEngine: completed ${job.jobType.name} for ${job.receiptId}');
 
-      // Check if all jobs for this receipt are done → update receipt status
-      await _checkReceiptFullySync(job.receiptId);
-
-      // Notify listeners that receipt data may have changed
-      onReceiptsChanged?.call();
+      // Only check full-sync after the last job (sheetsAppend) —
+      // earlier jobs can never make all three complete.
+      if (job.jobType == JobType.sheetsAppend) {
+        await _checkReceiptFullySync(job.receiptId);
+      }
 
     } catch (e) {
       debugPrint('SyncEngine: failed ${job.jobType.name} for ${job.receiptId}: $e');
@@ -340,13 +340,18 @@ class SyncEngine extends ChangeNotifier {
         final updated = receipt.copyWith(status: ReceiptStatus.synced);
         await _db.updateReceipt(updated);
         debugPrint('SyncEngine: receipt $receiptId fully synced!');
+        // Notify only when receipt status actually changed to synced
+        onReceiptsChanged?.call();
       }
     }
   }
 
   Future<void> _refreshPendingCount() async {
-    _pendingCount = await _db.getPendingJobCount();
-    notifyListeners();
+    final newCount = await _db.getPendingJobCount();
+    if (newCount != _pendingCount) {
+      _pendingCount = newCount;
+      notifyListeners();
+    }
   }
 
   String _getActivityMessage(SyncJob job) {
