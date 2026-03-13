@@ -24,7 +24,9 @@ MIN_HEIGHT = 200                       # Minimum image height in pixels
 
 # OCR working-copy tuning (keeps OCR quality while reducing payload/latency)
 OCR_MAX_LONG_EDGE = 2200
-OCR_JPEG_QUALITY = 85
+OCR_JPEG_QUALITY_DEFAULT = 88
+OCR_JPEG_QUALITY_SMALL_TEXT = 92
+OCR_SMALL_TEXT_LONG_EDGE_HINT = 2500
 
 
 def check_image_quality(image_bytes: bytes) -> dict:
@@ -105,38 +107,50 @@ def check_image_quality(image_bytes: bytes) -> dict:
 def make_ocr_working_copy(
     image_bytes: bytes,
     max_long_edge: int = OCR_MAX_LONG_EDGE,
-    jpeg_quality: int = OCR_JPEG_QUALITY,
+    jpeg_quality: int = OCR_JPEG_QUALITY_DEFAULT,
 ) -> bytes:
     """
-    Build a resized/compressed working copy for OCR.
+    Build a working copy for OCR only when needed.
 
     - Preserves aspect ratio.
     - Caps the long edge to [max_long_edge].
-    - Encodes as JPEG for smaller upload + OCR processing cost.
+    - Avoids recompressing when not required (returns original bytes).
+    - Uses higher JPEG quality for likely small-text high-resolution inputs.
     - Falls back to original bytes on any error.
     """
     try:
         img = Image.open(io.BytesIO(image_bytes))
+
+        width, height = img.size
+        long_edge = max(width, height)
+        needs_resize = long_edge > max_long_edge
+
+        # If no resize is needed, keep original bytes to preserve OCR fidelity.
+        if not needs_resize:
+            return image_bytes
+
         # Normalize to RGB for JPEG encoding
         if img.mode != "RGB":
             img = img.convert("RGB")
 
-        width, height = img.size
-        long_edge = max(width, height)
+        scale = max_long_edge / float(long_edge)
+        new_size = (
+            max(1, int(width * scale)),
+            max(1, int(height * scale)),
+        )
+        img = img.resize(new_size, Image.Resampling.LANCZOS)
 
-        if long_edge > max_long_edge:
-            scale = max_long_edge / float(long_edge)
-            new_size = (
-                max(1, int(width * scale)),
-                max(1, int(height * scale)),
-            )
-            img = img.resize(new_size, Image.Resampling.LANCZOS)
+        quality = (
+            OCR_JPEG_QUALITY_SMALL_TEXT
+            if long_edge >= OCR_SMALL_TEXT_LONG_EDGE_HINT
+            else jpeg_quality
+        )
 
         out = io.BytesIO()
         img.save(
             out,
             format="JPEG",
-            quality=jpeg_quality,
+            quality=quality,
             optimize=True,
         )
         return out.getvalue()

@@ -111,7 +111,8 @@ class _HomeRouterState extends State<HomeRouter> {
   bool _isChecking = true;
   Widget? _destination;
   StreamSubscription<List<SharedMediaFile>>? _shareSubscription;
-  List<SharedMediaFile>? _pendingShareFiles;
+  List<String>? _pendingSharePaths;
+  bool _isPresentingSharedImport = false;
 
   @override
   void initState() {
@@ -119,10 +120,8 @@ class _HomeRouterState extends State<HomeRouter> {
 
     // Cold start: check if the app was opened via a share intent
     ReceiveSharingIntent.instance.getInitialMedia().then((files) {
-      if (files.isNotEmpty) {
-        _pendingShareFiles = files;
-        ReceiveSharingIntent.instance.reset();
-      }
+      if (!mounted || files.isEmpty) return;
+      _queueSharedFiles(files);
     });
 
     // Warm start: listen for share intents arriving while the app is open
@@ -141,17 +140,7 @@ class _HomeRouterState extends State<HomeRouter> {
 
   void _onShareReceived(List<SharedMediaFile> files) {
     if (files.isEmpty) return;
-    ReceiveSharingIntent.instance.reset();
-
-    final paths = _extractPaths(files);
-    if (paths.isEmpty) return;
-
-    final nav = rootNavigatorKey.currentState;
-    if (nav == null) return;
-
-    nav.push(MaterialPageRoute(
-      builder: (_) => SharedImportScreen(filePaths: paths),
-    ));
+    _queueSharedFiles(files);
   }
 
   List<String> _extractPaths(List<SharedMediaFile> files) {
@@ -159,6 +148,50 @@ class _HomeRouterState extends State<HomeRouter> {
         .where((f) => f.path.isNotEmpty)
         .map((f) => f.path)
         .toList();
+  }
+
+  void _queueSharedFiles(List<SharedMediaFile> files) {
+    final paths = _extractPaths(files);
+    if (paths.isEmpty) return;
+
+    ReceiveSharingIntent.instance.reset();
+    _pendingSharePaths = paths;
+    _tryPresentPendingShare();
+  }
+
+  bool get _canPresentPendingShare {
+    return mounted &&
+        !_isChecking &&
+        _destination is MainPagerScreen &&
+        AuthService.instance.isSignedIn &&
+        StorageConfigService.instance.isFullyConfigured;
+  }
+
+  void _tryPresentPendingShare() {
+    final paths = _pendingSharePaths;
+    if (paths == null || paths.isEmpty) return;
+    if (_isPresentingSharedImport || !_canPresentPendingShare) return;
+
+    _pendingSharePaths = null;
+    _isPresentingSharedImport = true;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final nav = rootNavigatorKey.currentState;
+      if (!mounted || nav == null) {
+        _pendingSharePaths = paths;
+        _isPresentingSharedImport = false;
+        return;
+      }
+
+      await nav.push(
+        MaterialPageRoute(
+          builder: (_) => SharedImportScreen(filePaths: paths),
+        ),
+      );
+
+      _isPresentingSharedImport = false;
+      _tryPresentPendingShare();
+    });
   }
 
   Future<void> _determineDestination() async {
@@ -195,8 +228,8 @@ class _HomeRouterState extends State<HomeRouter> {
         _isChecking = false;
       });
 
-      // If the app was cold-started via a share intent, route to import now
-      _handlePendingShare();
+      // If the app was started via Android Share, route to import now.
+      _tryPresentPendingShare();
 
       unawaited(_validateAccessInBackground());
     }
@@ -211,25 +244,6 @@ class _HomeRouterState extends State<HomeRouter> {
       _destination = const StorageSetupScreen(isRelink: true);
     });
   }
-
-  void _handlePendingShare() {
-    if (_pendingShareFiles == null || _pendingShareFiles!.isEmpty) return;
-
-    final paths = _extractPaths(_pendingShareFiles!);
-    _pendingShareFiles = null;
-    if (paths.isEmpty) return;
-
-    // Push after the current frame so the home screen is already in the stack
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final nav = rootNavigatorKey.currentState;
-      if (nav == null) return;
-
-      nav.push(MaterialPageRoute(
-        builder: (_) => SharedImportScreen(filePaths: paths),
-      ));
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     if (_isChecking) {

@@ -32,6 +32,7 @@ class SyncEngine extends ChangeNotifier {
 
   bool _isRunning = false;
   bool _isOnline = false;
+  bool _hasConnectivitySnapshot = false;
   int _pendingCount = 0;
   String? _currentActivity;
 
@@ -41,6 +42,7 @@ class SyncEngine extends ChangeNotifier {
 
   bool get isRunning => _isRunning;
   bool get isOnline => _isOnline;
+  bool get hasConnectivitySnapshot => _hasConnectivitySnapshot;
   int get pendingCount => _pendingCount;
   String? get currentActivity => _currentActivity;
 
@@ -61,6 +63,7 @@ class SyncEngine extends ChangeNotifier {
       (results) {
         final wasOnline = _isOnline;
         _isOnline = results.any((r) => r != ConnectivityResult.none);
+        _hasConnectivitySnapshot = true;
         if (_isOnline && !wasOnline) {
           debugPrint('SyncEngine: back online, starting sync');
           runPendingJobs();
@@ -72,6 +75,7 @@ class SyncEngine extends ChangeNotifier {
     // Check initial connectivity
     _connectivity.checkConnectivity().then((results) {
       _isOnline = results.any((r) => r != ConnectivityResult.none);
+      _hasConnectivitySnapshot = true;
       notifyListeners();
       if (_isOnline) {
         runPendingJobs();
@@ -325,20 +329,59 @@ class SyncEngine extends ChangeNotifier {
     }
 
     // Update receipt with parsed data
+    final normalizedCurrency = _normalizeCurrency(
+      result['currency'] as String?,
+      fallback: receipt.currency,
+    );
+
+    final parsedCategory = (result['category'] as String?)?.trim();
+    final normalizedCategory =
+      (parsedCategory != null && parsedCategory.isNotEmpty)
+        ? parsedCategory
+        : 'אחר';
+
     final updated = receipt.copyWith(
       merchantName: result['merchant_name'] as String?,
       receiptDate: result['receipt_date'] as String?,
       totalAmount: result['total_amount'] != null
           ? (result['total_amount'] as num).toDouble()
           : null,
-      currency: (result['currency'] as String?) ?? receipt.currency,
-      category: result['category'] as String?,
+      currency: normalizedCurrency,
+      category: normalizedCategory,
       rawOcrText: result['raw_ocr_text'] as String?,
       overallConfidence: confMap['overall'],
       fieldConfidences: confMap,
       status: ReceiptStatus.processing, // Will become reviewed/synced later
     );
     await _db.updateReceipt(updated);
+  }
+
+  String _normalizeCurrency(String? raw, {String? fallback}) {
+    String cleaned = raw ?? '';
+    cleaned = cleaned.replaceAll(RegExp(r'[\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]'), '');
+    cleaned = cleaned.trim();
+
+    if (cleaned.isEmpty) {
+      var fb = fallback ?? '';
+      fb = fb.replaceAll(RegExp(r'[\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]'), '').trim();
+      cleaned = fb;
+    }
+
+    if (cleaned.isEmpty) return 'ILS';
+
+    final upper = cleaned.toUpperCase();
+    const mapped = {
+      '₪': 'ILS',
+      'ש"ח': 'ILS',
+      "ש'ח": 'ILS',
+      'שח': 'ILS',
+      'NIS': 'ILS',
+      'N.I.S': 'ILS',
+      'ILS': 'ILS',
+      'ILS.': 'ILS',
+    };
+
+    return mapped[upper] ?? upper;
   }
 
   Future<void> _executeSheetsAppend(

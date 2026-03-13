@@ -272,9 +272,18 @@ class SheetsService {
       try {
         final resp = await api.spreadsheets.values.get(
           spreadsheetId,
-          '$tabName!A1:F1',
+          '$tabName!A1:G1',
         );
-        if (resp.values == null || resp.values!.isEmpty) {
+        final current = (resp.values != null && resp.values!.isNotEmpty)
+            ? resp.values!.first.map((v) => v.toString()).toList()
+            : const <String>[];
+        final expected = AppConstants.sheetsHeaders;
+
+        final headersOk = current.length >= expected.length &&
+          List.generate(expected.length, (i) => i)
+            .every((i) => current[i] == expected[i]);
+
+        if (!headersOk) {
           await _writeHeaders(api, spreadsheetId, tabName);
         }
       } catch (e) {
@@ -318,7 +327,7 @@ class SheetsService {
     await api.spreadsheets.values.update(
       vr,
       spreadsheetId,
-      '$tabName!A1:F1',
+      '$tabName!A1:G1',
       valueInputOption: 'RAW',
     );
 
@@ -410,7 +419,16 @@ class SheetsService {
       (s) => s.properties?.title == totalsTabName,
     ) ?? false;
 
-    if (exists) return; // Already set up
+    if (exists) {
+      // Keep monthly table anchored at row 1 (D1:E14) even on old tabs.
+      await _ensureMonthlyTotalsLayout(
+        api,
+        spreadsheetId,
+        expensesTabName,
+        totalsTabName,
+      );
+      return;
+    }
 
     // Create the tab
     try {
@@ -439,8 +457,8 @@ class SheetsService {
     // ── Table 1: Category sums (columns A-B) — header + total only ──
     // Category rows will be added dynamically by _ensureCategoryInTotals.
     final catRows = <List<String>>[
-      ['קטגוריה', 'סכום'],       // Header (row 1)
-      ['סה"כ', '=SUM(B3:B3)'],  // Total  (row 2) — expands as categories are added
+      ['קטגוריה', 'סכום'],
+      ['סה"כ', '=0'],
     ];
 
     final catVr = sheets.ValueRange()..values = catRows;
@@ -451,26 +469,13 @@ class SheetsService {
       valueInputOption: 'USER_ENTERED',
     );
 
-    // ── Table 2: Monthly sums (columns D-E) ──
-    final monthNames = AppConstants.hebrewMonthNames;
-    final monthRows = <List<String>>[
-      ['חודש', 'סכום'], // Header (row 1)
-      ...List.generate(12, (i) {
-        final mm = (i + 1).toString().padLeft(2, '0');
-        return [
-          monthNames[i],
-          "=SUMIF('$expensesTabName'!A:A,\"$mm/$year\",'$expensesTabName'!C:C)",
-        ];
-      }),
-      ['סה"כ', '=SUM(E2:E13)'],
-    ];
-
-    final monthVr = sheets.ValueRange()..values = monthRows;
-    await api.spreadsheets.values.update(
-      monthVr,
+    // ── Table 2: Monthly sums (columns D-E), always anchored at row 1 ──
+    final monthRows = _buildMonthlyRows(expensesTabName, year);
+    await _writeMonthlyTotalsTable(
+      api,
       spreadsheetId,
-      '$totalsTabName!D1:E${monthRows.length}',
-      valueInputOption: 'USER_ENTERED',
+      totalsTabName,
+      monthRows,
     );
 
     // ── Formatting ──
@@ -732,6 +737,168 @@ class SheetsService {
     debugPrint('Sheets: created and formatted totals tab "$totalsTabName"');
   }
 
+  List<List<String>> _buildMonthlyRows(String expensesTabName, String year) {
+    final monthNames = AppConstants.hebrewMonthNames;
+    return <List<String>>[
+      ['חודש', 'סכום'],
+      ...List.generate(12, (i) {
+        final mm = (i + 1).toString().padLeft(2, '0');
+        return [
+          monthNames[i],
+          "=SUMIF('$expensesTabName'!A:A,\"$mm/$year\",'$expensesTabName'!C:C)",
+        ];
+      }),
+      ['סה"כ', '=SUM(E2:E13)'],
+    ];
+  }
+
+  Future<void> _writeMonthlyTotalsTable(
+    sheets.SheetsApi api,
+    String spreadsheetId,
+    String totalsTabName,
+    List<List<String>> monthRows,
+  ) async {
+    final monthVr = sheets.ValueRange()..values = monthRows;
+    await api.spreadsheets.values.update(
+      monthVr,
+      spreadsheetId,
+      '$totalsTabName!D1:E${monthRows.length}',
+      valueInputOption: 'USER_ENTERED',
+    );
+  }
+
+  Future<void> _ensureMonthlyTotalsLayout(
+    sheets.SheetsApi api,
+    String spreadsheetId,
+    String expensesTabName,
+    String totalsTabName,
+  ) async {
+    final year = expensesTabName.split(' ').last;
+    final monthRows = _buildMonthlyRows(expensesTabName, year);
+    await _writeMonthlyTotalsTable(
+      api,
+      spreadsheetId,
+      totalsTabName,
+      monthRows,
+    );
+
+    final totalsSheetId = await _getSheetId(api, spreadsheetId, totalsTabName);
+    final monthTotalRow = monthRows.length - 1; // 0-indexed
+
+    await api.spreadsheets.batchUpdate(
+      sheets.BatchUpdateSpreadsheetRequest(requests: [
+        // Bold header row (D-E)
+        sheets.Request(
+          repeatCell: sheets.RepeatCellRequest(
+            range: sheets.GridRange(
+              sheetId: totalsSheetId,
+              startRowIndex: 0,
+              endRowIndex: 1,
+              startColumnIndex: 3,
+              endColumnIndex: 5,
+            ),
+            cell: sheets.CellData(
+              userEnteredFormat: sheets.CellFormat(
+                textFormat: sheets.TextFormat(
+                  bold: true,
+                  fontSize: 11,
+                  foregroundColor:
+                      sheets.Color(red: 1, green: 1, blue: 1, alpha: 1),
+                ),
+                backgroundColor: sheets.Color(
+                  red: 0.2,
+                  green: 0.2,
+                  blue: 0.2,
+                  alpha: 1.0,
+                ),
+                horizontalAlignment: 'CENTER',
+              ),
+            ),
+            fields:
+                'userEnteredFormat(textFormat,backgroundColor,horizontalAlignment)',
+          ),
+        ),
+        // Bold monthly total row
+        sheets.Request(
+          repeatCell: sheets.RepeatCellRequest(
+            range: sheets.GridRange(
+              sheetId: totalsSheetId,
+              startRowIndex: monthTotalRow,
+              endRowIndex: monthTotalRow + 1,
+              startColumnIndex: 3,
+              endColumnIndex: 5,
+            ),
+            cell: sheets.CellData(
+              userEnteredFormat: sheets.CellFormat(
+                textFormat: sheets.TextFormat(bold: true, fontSize: 12),
+                backgroundColor: sheets.Color(
+                  red: 0.93,
+                  green: 0.93,
+                  blue: 0.93,
+                  alpha: 1.0,
+                ),
+              ),
+            ),
+            fields: 'userEnteredFormat(textFormat,backgroundColor)',
+          ),
+        ),
+        // Borders around monthly table
+        sheets.Request(
+          updateBorders: sheets.UpdateBordersRequest(
+            range: sheets.GridRange(
+              sheetId: totalsSheetId,
+              startRowIndex: 0,
+              endRowIndex: monthRows.length,
+              startColumnIndex: 3,
+              endColumnIndex: 5,
+            ),
+            top: _solidBorder(),
+            bottom: _solidBorder(),
+            left: _solidBorder(),
+            right: _solidBorder(),
+            innerHorizontal: _solidBorder(),
+            innerVertical: _solidBorder(),
+          ),
+        ),
+        // Thick border above total row
+        sheets.Request(
+          updateBorders: sheets.UpdateBordersRequest(
+            range: sheets.GridRange(
+              sheetId: totalsSheetId,
+              startRowIndex: monthTotalRow,
+              endRowIndex: monthTotalRow + 1,
+              startColumnIndex: 3,
+              endColumnIndex: 5,
+            ),
+            top: _thickBorder(),
+          ),
+        ),
+        // Number format for monthly amounts (column E rows 2+)
+        sheets.Request(
+          repeatCell: sheets.RepeatCellRequest(
+            range: sheets.GridRange(
+              sheetId: totalsSheetId,
+              startRowIndex: 1,
+              endRowIndex: monthRows.length,
+              startColumnIndex: 4,
+              endColumnIndex: 5,
+            ),
+            cell: sheets.CellData(
+              userEnteredFormat: sheets.CellFormat(
+                numberFormat: sheets.NumberFormat(
+                  type: 'NUMBER',
+                  pattern: '#,##0.00',
+                ),
+              ),
+            ),
+            fields: 'userEnteredFormat.numberFormat',
+          ),
+        ),
+      ]),
+      spreadsheetId,
+    );
+  }
+
   /// Ensure a category row exists in the totals tab.
   /// If not, insert it in alphabetical order with a SUMIF formula,
   /// then update the total row formula and apply formatting.
@@ -745,90 +912,68 @@ class SheetsService {
     if (category.isEmpty) return;
 
     try {
-      // 1. Read column A to find existing rows
+      // 1. Read the existing category table
       final resp = await api.spreadsheets.values.get(
         spreadsheetId,
-        '$totalsTabName!A:A',
+        '$totalsTabName!A2:B1000',
       );
       final values = resp.values ?? [];
-      if (values.isEmpty) return; // Malformed tab
 
-      // 2. Find the total row and existing categories
-      int totalRowIndex = -1; // 0-indexed position in values list
+      // 2. Parse existing categories from A2 downward (ignore total row)
       final existingCategories = <String>[];
-
-      for (int i = 1; i < values.length; i++) {
-        // Skip header (row 0)
-        final cellVal = values[i].isNotEmpty ? values[i][0].toString() : '';
-        if (cellVal.contains('סה"כ') || cellVal.contains("סה\"כ")) {
-          totalRowIndex = i;
-          break;
-        }
-        if (cellVal.isNotEmpty) {
-          existingCategories.add(cellVal);
-        }
+      for (final row in values) {
+        final name = row.isNotEmpty ? row[0].toString().trim() : '';
+        if (name.isEmpty) continue;
+        if (name.contains('סה"כ') || name.contains("סה\"כ")) break;
+        existingCategories.add(name);
       }
-
-      if (totalRowIndex == -1) return; // No total row found
 
       // 3. Check if category already exists
       if (existingCategories.contains(category)) return;
 
-      // 4. Find alphabetical insertion position
-      int insertPos = 0; // Position within the category list
-      for (int i = 0; i < existingCategories.length; i++) {
-        if (category.compareTo(existingCategories[i]) > 0) {
-          insertPos = i + 1;
-        } else {
-          break;
-        }
+      // 4. Rebuild table in sorted order (without inserting sheet rows,
+      //    so monthly table in D-E never shifts downward).
+      final categories = <String>{...existingCategories, category}.toList()
+        ..sort();
+
+      final categoryRows = <List<String>>[];
+      for (final c in categories) {
+        categoryRows.add([
+          c,
+          "=SUMIF('$expensesTabName'!E:E,\"$c\",'$expensesTabName'!C:C)",
+        ]);
       }
 
-      // Convert to 1-based sheet row: header=1, first category=2
-      final insertRow = insertPos + 2;
+      final categoryCount = categories.length;
+      final totalRowNumber = categoryCount + 2; // header row is 1
+      final totalFormula =
+          categoryCount > 0 ? '=SUM(B2:B${totalRowNumber - 1})' : '=0';
 
-      // 5. Get sheet ID and insert a blank row
-      final sheetId = await _getSheetId(api, spreadsheetId, totalsTabName);
-      await _insertRow(api, spreadsheetId, sheetId, insertRow);
+      final allRows = <List<String>>[
+        ...categoryRows,
+        ['סה"כ', totalFormula],
+      ];
 
-      // 6. Write category name + SUMIF formula
-      final formula =
-          "=SUMIF('$expensesTabName'!E:E,\"$category\",'$expensesTabName'!C:C)";
-      final vr = sheets.ValueRange()
-        ..values = [
-          [category, formula]
-        ];
+      final vr = sheets.ValueRange()..values = allRows;
       await api.spreadsheets.values.update(
         vr,
         spreadsheetId,
-        '$totalsTabName!A$insertRow:B$insertRow',
+        '$totalsTabName!A2:B$totalRowNumber',
         valueInputOption: 'USER_ENTERED',
       );
 
-      // 7. Update total row (it shifted down by 1)
-      final newTotalRow = totalRowIndex + 2; // +1 for 1-based, +1 for shift
-      final totalFormula = '=SUM(B2:B${newTotalRow - 1})';
-      final totalVr = sheets.ValueRange()
-        ..values = [
-          ['סה"כ', totalFormula]
-        ];
-      await api.spreadsheets.values.update(
-        totalVr,
-        spreadsheetId,
-        '$totalsTabName!A$newTotalRow:B$newTotalRow',
-        valueInputOption: 'USER_ENTERED',
-      );
+      final sheetId = await _getSheetId(api, spreadsheetId, totalsTabName);
 
-      // 8. Format the new row + total row + borders
+      // 5. Format the category table + total row + borders
       await api.spreadsheets.batchUpdate(
         sheets.BatchUpdateSpreadsheetRequest(requests: [
-          // Number format for the new amount cell
+          // Number format for category amount cells
           sheets.Request(
             repeatCell: sheets.RepeatCellRequest(
               range: sheets.GridRange(
                 sheetId: sheetId,
-                startRowIndex: insertRow - 1, // 0-indexed
-                endRowIndex: insertRow,
+                startRowIndex: 1,
+                endRowIndex: totalRowNumber,
                 startColumnIndex: 1,
                 endColumnIndex: 2,
               ),
@@ -848,8 +993,8 @@ class SheetsService {
             repeatCell: sheets.RepeatCellRequest(
               range: sheets.GridRange(
                 sheetId: sheetId,
-                startRowIndex: newTotalRow - 1, // 0-indexed
-                endRowIndex: newTotalRow,
+                startRowIndex: totalRowNumber - 1,
+                endRowIndex: totalRowNumber,
                 startColumnIndex: 0,
                 endColumnIndex: 2,
               ),
@@ -869,13 +1014,13 @@ class SheetsService {
                   'userEnteredFormat(textFormat,backgroundColor,numberFormat)',
             ),
           ),
-          // Borders around entire category table (header through total)
+          // Borders around entire category table (header through total row)
           sheets.Request(
             updateBorders: sheets.UpdateBordersRequest(
               range: sheets.GridRange(
                 sheetId: sheetId,
                 startRowIndex: 0,
-                endRowIndex: newTotalRow, // 0-indexed end (exclusive)
+                endRowIndex: totalRowNumber,
                 startColumnIndex: 0,
                 endColumnIndex: 2,
               ),
@@ -892,8 +1037,8 @@ class SheetsService {
             updateBorders: sheets.UpdateBordersRequest(
               range: sheets.GridRange(
                 sheetId: sheetId,
-                startRowIndex: newTotalRow - 1, // 0-indexed
-                endRowIndex: newTotalRow,
+                startRowIndex: totalRowNumber - 1,
+                endRowIndex: totalRowNumber,
                 startColumnIndex: 0,
                 endColumnIndex: 2,
               ),
@@ -905,7 +1050,7 @@ class SheetsService {
       );
 
       debugPrint(
-        'Sheets: added category "$category" at row $insertRow in "$totalsTabName"',
+        'Sheets: added category "$category" in "$totalsTabName"',
       );
     } catch (e) {
       debugPrint('Sheets: failed to add category to totals: $e');
@@ -1144,8 +1289,8 @@ class SheetsService {
   /// Column width requests for the main data sheet.
   List<sheets.Request> _columnWidthRequests(int sheetId) {
     // A: חודש(90), B: שם עסק(200), C: סכום(100), D: מטבע(70),
-    // E: קטגוריה(120), F: קישור(280), G: מזהה(50)
-    const widths = [90, 200, 100, 70, 120, 280, 50];
+    // E: קטגוריה(120), F: קישור(280), G: מזהה קבלה(36, hidden)
+    const widths = [90, 200, 100, 70, 120, 280, 36];
     return List.generate(widths.length, (i) {
       return sheets.Request(
         updateDimensionProperties: sheets.UpdateDimensionPropertiesRequest(
@@ -1155,8 +1300,11 @@ class SheetsService {
             startIndex: i,
             endIndex: i + 1,
           ),
-          properties: sheets.DimensionProperties(pixelSize: widths[i]),
-          fields: 'pixelSize',
+          properties: sheets.DimensionProperties(
+            pixelSize: widths[i],
+            hiddenByUser: i == 6,
+          ),
+          fields: 'pixelSize,hiddenByUser',
         ),
       );
     });

@@ -17,6 +17,7 @@
 
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../db/database_helper.dart';
 import '../models/receipt.dart';
@@ -24,6 +25,31 @@ import '../providers/app_state.dart';
 import '../services/custom_category_service.dart';
 import '../services/sync_engine.dart';
 import '../widgets/loading_indicator.dart';
+
+class _SlashDateInputFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final digits = newValue.text.replaceAll(RegExp(r'[^0-9]'), '');
+    final clamped = digits.length > 8 ? digits.substring(0, 8) : digits;
+
+    final buffer = StringBuffer();
+    for (int i = 0; i < clamped.length; i++) {
+      buffer.write(clamped[i]);
+      if ((i == 1 || i == 3) && i != clamped.length - 1) {
+        buffer.write('/');
+      }
+    }
+
+    final text = buffer.toString();
+    return TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+  }
+}
 
 class ReviewAndFixScreen extends StatefulWidget {
   final String receiptId;
@@ -123,6 +149,32 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
     return '$year-$month-$day';
   }
 
+  String _normalizeCurrency(String? raw, {String fallback = 'ILS'}) {
+    var value = (raw ?? '')
+        .replaceAll(RegExp(r'[\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]'), '')
+        .trim();
+
+    if (value.isEmpty) value = fallback;
+    value = value
+        .replaceAll(RegExp(r'[\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]'), '')
+        .trim()
+        .toUpperCase();
+
+    switch (value) {
+      case '₪':
+      case 'ש"ח':
+      case "ש'ח":
+      case 'שח':
+      case 'NIS':
+      case 'N.I.S':
+      case 'ILS.':
+      case 'ILS':
+        return 'ILS';
+      default:
+        return value.isNotEmpty ? value : 'ILS';
+    }
+  }
+
   void _populateFields(Receipt receipt) {
     _merchantController.text = receipt.merchantName ?? '';
     _dateController.text = receipt.receiptDate != null
@@ -130,8 +182,14 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
         : '';
     _amountController.text =
         receipt.totalAmount?.toStringAsFixed(2) ?? '';
-    _currencyController.text = receipt.currency;
-    _selectedCategory = receipt.category;
+    final normalizedCurrency = _normalizeCurrency(receipt.currency);
+    _currencyController.text = normalizedCurrency;
+
+    final normalizedCategory = receipt.category?.trim();
+    _selectedCategory =
+      (normalizedCategory != null && normalizedCategory.isNotEmpty)
+        ? normalizedCategory
+        : 'אחר';
   }
 
   /// Poll every 2 seconds until processing is complete
@@ -216,10 +274,10 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
             : null,
         receiptDate: finalIsoDate,
         totalAmount: finalAmount,
-        currency: _currencyController.text.isNotEmpty
-            ? _currencyController.text
-            : 'ILS',
-        category: _selectedCategory,
+        currency: _normalizeCurrency(_currencyController.text),
+        category: (_selectedCategory != null && _selectedCategory!.trim().isNotEmpty)
+          ? _selectedCategory!.trim()
+          : 'אחר',
         status: ReceiptStatus.reviewed,
       );
 
@@ -774,6 +832,9 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
             ),
             keyboardType: TextInputType.datetime,
             hint: 'dd/mm/yyyy',
+            inputFormatters: [
+              _SlashDateInputFormatter(),
+            ],
           ),
           const SizedBox(height: 16),
 
@@ -797,7 +858,10 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
                   label: 'מטבע',
                   controller: _currencyController,
                   icon: Icons.currency_exchange,
-                  confidence: confidences['currency'],
+                  confidence: null,
+                  showPrefixIcon: false,
+                  textDirection: TextDirection.ltr,
+                  textAlign: TextAlign.left,
                 ),
               ),
             ],
@@ -840,7 +904,7 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
   }
 
   /// Show a bottom-sheet category picker.
-  /// Layout: ללא → top 3 (★) → divider → all categories → divider → הוסף קטגוריה.
+  /// Layout: top 3 (★) → divider → all categories → divider → הוסף קטגוריה.
   /// Custom categories show a small edit icon for renaming.
   void _showCategoryPicker() {
     final svc = CustomCategoryService.instance;
@@ -886,9 +950,6 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
                   child: ListView(
                     controller: scrollController,
                     children: [
-                      _categoryTile(null, 'ללא',
-                          isSelected: _selectedCategory == null),
-
                       if (hasOrphan)
                         _categoryTile(_selectedCategory, _selectedCategory!,
                             isSelected: true, italic: true),
@@ -1154,16 +1215,22 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
     TextInputType? keyboardType,
     TextInputAction? textInputAction,
     String? hint,
+    List<TextInputFormatter>? inputFormatters,
+    TextDirection? textDirection,
+    TextAlign? textAlign,
+    bool showPrefixIcon = true,
   }) {
     return TextField(
       controller: controller,
       keyboardType: keyboardType,
       textInputAction: textInputAction ?? TextInputAction.next,
-      textDirection: TextDirection.rtl,
+      textDirection: textDirection ?? TextDirection.rtl,
+      textAlign: textAlign ?? TextAlign.right,
+      inputFormatters: inputFormatters,
       decoration: InputDecoration(
         labelText: label,
         hintText: hint,
-        prefixIcon: Icon(icon),
+        prefixIcon: showPrefixIcon ? Icon(icon) : null,
         suffixIcon: suffix ??
             (confidence != null
                 ? Padding(

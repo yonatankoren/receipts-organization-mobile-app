@@ -45,6 +45,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
   FlashMode _flashMode = FlashMode.auto;
   String? _error;
   bool _wasOnline = true;
+  bool _offlineWasShown = false;
   bool _isImportMenuOpen = false;
   bool _isDriveMenuOpen = false;
 
@@ -52,7 +53,10 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _wasOnline = SyncEngine.instance.isOnline;
+    _wasOnline = SyncEngine.instance.hasConnectivitySnapshot
+        ? SyncEngine.instance.isOnline
+        : true;
+    _offlineWasShown = false;
     SyncEngine.instance.addListener(_onConnectivityChanged);
     // Refresh lightweight dashboard counts whenever SyncEngine updates status
     SyncEngine.instance.onReceiptsChanged = () {
@@ -77,8 +81,14 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
   }
 
   void _onConnectivityChanged() {
+    if (!SyncEngine.instance.hasConnectivitySnapshot) return;
+
     final isOnline = SyncEngine.instance.isOnline;
-    if (isOnline && !_wasOnline && mounted) {
+    if (!isOnline) {
+      _offlineWasShown = true;
+    }
+
+    if (isOnline && !_wasOnline && _offlineWasShown && mounted) {
       // Connection restored — show snackbar
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -95,6 +105,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
           margin: const EdgeInsets.only(bottom: 80, left: 16, right: 16),
         ),
       );
+      _offlineWasShown = false;
     }
     _wasOnline = isOnline;
     if (mounted) setState(() {});
@@ -395,7 +406,8 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    final isOnline = SyncEngine.instance.isOnline;
+    final engine = SyncEngine.instance;
+    final isOnline = !engine.hasConnectivitySnapshot || engine.isOnline;
     final appState = context.watch<AppState>();
     final pendingExpenses = appState.pendingExpenseCount;
 

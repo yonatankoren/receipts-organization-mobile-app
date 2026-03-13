@@ -27,7 +27,10 @@ class _ExpensesListScreenState extends State<ExpensesListScreen> {
   @override
   void initState() {
     super.initState();
-    context.read<AppState>().loadExpenses();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<AppState>().loadExpenses();
+    });
   }
 
   @override

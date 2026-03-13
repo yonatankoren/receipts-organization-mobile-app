@@ -44,6 +44,7 @@ class PdfImportService {
 
   static const int maxPages = 4;
   static const int maxFileSizeBytes = 20 * 1024 * 1024; // 20 MB
+  static const int ocrMinLongEdgePx = 1600;
   static const int ocrMaxLongEdgePx = 2200;
 
   /// Process a PDF file: render pages → OCR each → merge text.
@@ -152,11 +153,13 @@ class PdfImportService {
     double srcHeight,
   ) {
     final longEdge = srcWidth > srcHeight ? srcWidth : srcHeight;
-    if (longEdge <= ocrMaxLongEdgePx) {
+    if (longEdge >= ocrMinLongEdgePx && longEdge <= ocrMaxLongEdgePx) {
       return (width: srcWidth, height: srcHeight);
     }
 
-    final scale = ocrMaxLongEdgePx / longEdge;
+    final targetLongEdge =
+        longEdge < ocrMinLongEdgePx ? ocrMinLongEdgePx : ocrMaxLongEdgePx;
+    final scale = targetLongEdge / longEdge;
     return (
       width: srcWidth * scale,
       height: srcHeight * scale,

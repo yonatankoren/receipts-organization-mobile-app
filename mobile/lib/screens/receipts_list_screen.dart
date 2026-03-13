@@ -32,7 +32,10 @@ class _ReceiptsListScreenState extends State<ReceiptsListScreen> {
   @override
   void initState() {
     super.initState();
-    context.read<AppState>().loadReceipts();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<AppState>().loadReceipts();
+    });
   }
 
   void _toggleSelection(String id) {

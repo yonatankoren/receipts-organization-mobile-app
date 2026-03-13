@@ -20,7 +20,7 @@ class AppConstants {
     'מטבע',
     'קטגוריה',
     'קישור לתמונה',
-    'מזהה',
+    'מזהה קבלה',
   ];
 
   /// Number of data columns in the main sheet
