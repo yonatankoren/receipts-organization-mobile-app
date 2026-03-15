@@ -497,7 +497,7 @@ class _ReceiptsListScreenState extends State<ReceiptsListScreen> {
                       children: [
                         if (receipt.totalAmount != null) ...[
                           Text(
-                            '₪${receipt.totalAmount!.toStringAsFixed(2)}',
+                            '${receipt.currencySymbol}${receipt.totalAmount!.toStringAsFixed(2)}',
                             style: theme.textTheme.bodyMedium?.copyWith(
                               fontWeight: FontWeight.w600,
                               color: theme.colorScheme.primary,

@@ -26,7 +26,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 5,
+      version: 6,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -44,6 +44,9 @@ class DatabaseHelper {
         receipt_date TEXT,
         total_amount REAL,
         currency TEXT DEFAULT 'ILS',
+        converted_amount_ils REAL,
+        final_rate_used REAL,
+        final_rate_date TEXT,
         category TEXT,
         drive_file_id TEXT,
         drive_file_link TEXT,
@@ -109,6 +112,14 @@ class DatabaseHelper {
           'CREATE INDEX IF NOT EXISTS idx_jobs_ready_scan ON sync_jobs(status, next_retry_at, retry_count, created_at)');
       await db.execute(
           'CREATE INDEX IF NOT EXISTS idx_receipts_status_ocr ON receipts(status, raw_ocr_text)');
+    }
+    if (oldVersion < 6) {
+      await db.execute(
+        'ALTER TABLE receipts ADD COLUMN converted_amount_ils REAL');
+      await db.execute(
+        'ALTER TABLE receipts ADD COLUMN final_rate_used REAL');
+      await db.execute(
+        'ALTER TABLE receipts ADD COLUMN final_rate_date TEXT');
     }
   }
 
@@ -482,6 +493,7 @@ class DatabaseHelper {
     required String? merchantName,
     required String? receiptDate,
     required double? totalAmount,
+    required String? currency,
     String? excludeId,
   }) async {
     // Need at least date + amount to detect duplicates
@@ -494,12 +506,13 @@ class DatabaseHelper {
     // Query for exact date + amount match
     final maps = await db.query(
       'receipts',
-      where: "receipt_date = ? AND total_amount = ? "
+      where: "receipt_date = ? AND total_amount = ? AND currency = ? "
           "AND status != 'captured' "
           "${excludeId != null ? "AND id != ?" : ""}",
       whereArgs: [
         receiptDate,
         totalAmount,
+        currency ?? '',
         if (excludeId != null) excludeId,
       ],
     );

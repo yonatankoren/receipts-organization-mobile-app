@@ -13,6 +13,7 @@ import '../services/image_service.dart';
 import '../services/sheets_service.dart';
 import '../services/sync_engine.dart';
 import '../services/backend_service.dart';
+import '../services/currency_conversion_service.dart';
 import '../models/receipt_validation_exception.dart';
 
 class AppState extends ChangeNotifier {
@@ -311,7 +312,55 @@ class AppState extends ChangeNotifier {
   /// Merges user-editable fields onto the latest DB state so that
   /// system-managed fields (driveFileId, driveFileLink, rawOcrText, etc.)
   /// are never accidentally overwritten with stale/null values.
-  Future<void> saveReview(Receipt receipt) async {
+  Future<Receipt> prepareReviewedReceipt(Receipt receipt) async {
+    final normalizedCurrency = _normalizeCurrency(receipt.currency);
+    final originalAmount = receipt.totalAmount;
+
+    if (originalAmount == null) {
+      return receipt.copyWith(
+        currency: normalizedCurrency,
+        convertedAmountIls: null,
+        finalRateUsed: null,
+        finalRateDate: null,
+        status: ReceiptStatus.reviewed,
+      );
+    }
+
+    if (normalizedCurrency.isEmpty) {
+      throw Exception('יש לבחור מטבע');
+    }
+
+    if (normalizedCurrency == 'ILS') {
+      return receipt.copyWith(
+        currency: normalizedCurrency,
+        convertedAmountIls: originalAmount,
+        finalRateUsed: 1.0,
+        finalRateDate: receipt.receiptDate,
+        status: ReceiptStatus.reviewed,
+      );
+    }
+
+    final receiptDate = receipt.receiptDate;
+    if (receiptDate == null || receiptDate.isEmpty) {
+      throw Exception('יש להזין תאריך קבלה כדי לחשב המרה לש״ח');
+    }
+
+    final conversion = await CurrencyConversionService.instance.getFinalIlsConversion(
+      amount: originalAmount,
+      fromCurrency: normalizedCurrency,
+      receiptDate: receiptDate,
+    );
+
+    return receipt.copyWith(
+      currency: normalizedCurrency,
+      convertedAmountIls: conversion.convertedAmountIls,
+      finalRateUsed: conversion.rateUsed,
+      finalRateDate: conversion.rateDate,
+      status: ReceiptStatus.reviewed,
+    );
+  }
+
+  Future<void> saveReview(Receipt receipt, {bool triggerSync = true}) async {
     // Read the freshest copy from DB (may have driveFileLink set by upload job)
     final fresh = await _db.getReceipt(receipt.id);
     final base = fresh ?? receipt;
@@ -322,6 +371,9 @@ class AppState extends ChangeNotifier {
       receiptDate: receipt.receiptDate,
       totalAmount: receipt.totalAmount,
       currency: receipt.currency,
+      convertedAmountIls: receipt.convertedAmountIls,
+      finalRateUsed: receipt.finalRateUsed,
+      finalRateDate: receipt.finalRateDate,
       category: receipt.category,
       status: base.status == ReceiptStatus.synced
           ? ReceiptStatus.synced
@@ -336,8 +388,10 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     // Trigger sync to push any remaining jobs
-    SyncEngine.instance.runPendingJobs();
-    await loadLaunchDashboardCounts();
+    if (triggerSync) {
+      SyncEngine.instance.runPendingJobs();
+      await loadLaunchDashboardCounts();
+    }
   }
 
   /// Refresh a single receipt from DB
@@ -362,6 +416,7 @@ class AppState extends ChangeNotifier {
       merchantName: receipt.merchantName,
       receiptDate: receipt.receiptDate,
       totalAmount: receipt.totalAmount,
+      currency: _normalizeCurrency(receipt.currency),
       excludeId: receipt.id,
     );
     return dupes.isNotEmpty ? dupes.first : null;
@@ -486,20 +541,9 @@ class AppState extends ChangeNotifier {
   Future<void> confirmExpenseReceipt({
     required String receiptId,
     required String expenseId,
-    required double chosenAmount,
   }) async {
-    // Update the receipt with the chosen amount and mark as reviewed
     final receipt = await _db.getReceipt(receiptId);
     if (receipt == null) return;
-
-    final updated = receipt.copyWith(
-      totalAmount: chosenAmount,
-      status: ReceiptStatus.reviewed,
-    );
-    await _db.updateReceipt(updated);
-
-    final idx = _receipts.indexWhere((r) => r.id == receiptId);
-    if (idx >= 0) _receipts[idx] = updated;
 
     // Enqueue sync jobs (upload to Drive + append to Sheets)
     await SyncEngine.instance.enqueueReceiptJobs(receiptId);

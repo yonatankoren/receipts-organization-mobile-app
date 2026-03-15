@@ -61,11 +61,11 @@ class SheetsService {
       final year = receipt.receiptYear;
       final tabName = _expensesTabName(year);
 
-      // 1. Try to find the row by receipt_id in column G first
+      // 1. Try to find the row by receipt_id in column H first
       int? targetRow;
       final gResp = await api.spreadsheets.values.get(
         spreadsheetId,
-        '$tabName!G:G',
+        '$tabName!H:H',
       );
       if (gResp.values != null) {
         for (int i = 0; i < gResp.values!.length; i++) {
@@ -201,7 +201,7 @@ class SheetsService {
         );
       }
 
-      // 3. Idempotency: check receipt_id in column G
+      // 3. Idempotency: check receipt_id in column H
       if (!skipDuplicateCheck) {
         final dup = await _isReceiptIdInSheet(
           api,
@@ -235,7 +235,7 @@ class SheetsService {
       await api.spreadsheets.values.update(
         valueRange,
         spreadsheetId,
-        '$expensesTab!A$insertRow:G$insertRow',
+        '$expensesTab!A$insertRow:H$insertRow',
         valueInputOption: 'USER_ENTERED',
       );
 
@@ -268,15 +268,36 @@ class SheetsService {
     ) ?? false;
 
     if (exists) {
+      final resp = await api.spreadsheets.values.get(
+        spreadsheetId,
+        '$tabName!A1:H2',
+      );
+      final current = (resp.values != null && resp.values!.isNotEmpty)
+          ? resp.values!.first.map((v) => v.toString()).toList()
+          : const <String>[];
+      final legacyHeaders = const [
+        'חודש',
+        'שם עסק',
+        'סכום',
+        'מטבע',
+        'קטגוריה',
+        'קישור לתמונה',
+        'מזהה קבלה',
+      ];
+
+      final isLegacyLayout = current.length >= legacyHeaders.length &&
+          List.generate(legacyHeaders.length, (i) => i)
+              .every((i) => current[i] == legacyHeaders[i]) &&
+          (current.length < AppConstants.sheetsHeaders.length ||
+              (current.length >= 8 && current[7] != 'מזהה קבלה'));
+
+      if (isLegacyLayout) {
+        await _migrateLegacyExpensesTab(api, spreadsheetId, tabName);
+        return;
+      }
+
       // Tab exists — check if headers are set
       try {
-        final resp = await api.spreadsheets.values.get(
-          spreadsheetId,
-          '$tabName!A1:G1',
-        );
-        final current = (resp.values != null && resp.values!.isNotEmpty)
-            ? resp.values!.first.map((v) => v.toString()).toList()
-            : const <String>[];
         final expected = AppConstants.sheetsHeaders;
 
         final headersOk = current.length >= expected.length &&
@@ -317,6 +338,55 @@ class SheetsService {
     await _writeHeaders(api, spreadsheetId, tabName);
   }
 
+  Future<void> _migrateLegacyExpensesTab(
+    sheets.SheetsApi api,
+    String spreadsheetId,
+    String tabName,
+  ) async {
+    final sheetId = await _getSheetId(api, spreadsheetId, tabName);
+
+    await api.spreadsheets.batchUpdate(
+      sheets.BatchUpdateSpreadsheetRequest(requests: [
+        sheets.Request(
+          insertDimension: sheets.InsertDimensionRequest(
+            range: sheets.DimensionRange(
+              sheetId: sheetId,
+              dimension: 'COLUMNS',
+              startIndex: 6,
+              endIndex: 7,
+            ),
+            inheritFromBefore: false,
+          ),
+        ),
+      ]),
+      spreadsheetId,
+    );
+
+    final monthResp = await api.spreadsheets.values.get(
+      spreadsheetId,
+      '$tabName!A:A',
+    );
+    final rowCount = monthResp.values?.length ?? 0;
+    if (rowCount > 1) {
+      final formulas = List.generate(rowCount - 1, (index) {
+        final rowNumber = index + 2;
+        return [
+          '=IF(AND(OR(D$rowNumber="ILS",D$rowNumber="₪",D$rowNumber="NIS"),C$rowNumber<>""),C$rowNumber,"")',
+        ];
+      });
+
+      await api.spreadsheets.values.update(
+        sheets.ValueRange()..values = formulas,
+        spreadsheetId,
+        '$tabName!G2:G$rowCount',
+        valueInputOption: 'USER_ENTERED',
+      );
+    }
+
+    await _writeHeaders(api, spreadsheetId, tabName);
+    debugPrint('Sheets: migrated legacy expenses tab "$tabName" to 8 columns');
+  }
+
   Future<void> _writeHeaders(
     sheets.SheetsApi api,
     String spreadsheetId,
@@ -327,7 +397,7 @@ class SheetsService {
     await api.spreadsheets.values.update(
       vr,
       spreadsheetId,
-      '$tabName!A1:G1',
+      '$tabName!A1:H1',
       valueInputOption: 'RAW',
     );
 
@@ -745,7 +815,7 @@ class SheetsService {
         final mm = (i + 1).toString().padLeft(2, '0');
         return [
           monthNames[i],
-          "=SUMIF('$expensesTabName'!A:A,\"$mm/$year\",'$expensesTabName'!C:C)",
+          "=SUMIF('$expensesTabName'!A:A,\"$mm/$year\",'$expensesTabName'!G:G)",
         ];
       }),
       ['סה"כ', '=SUM(E2:E13)'],
@@ -940,7 +1010,7 @@ class SheetsService {
       for (final c in categories) {
         categoryRows.add([
           c,
-          "=SUMIF('$expensesTabName'!E:E,\"$c\",'$expensesTabName'!C:C)",
+          "=SUMIF('$expensesTabName'!E:E,\"$c\",'$expensesTabName'!G:G)",
         ]);
       }
 
@@ -1197,7 +1267,7 @@ class SheetsService {
             innerVertical: _solidBorder(),
           ),
         ),
-        // Number format for amount column (C = index 2)
+        // Number format for original amount column (C = index 2)
         sheets.Request(
           repeatCell: sheets.RepeatCellRequest(
             range: sheets.GridRange(
@@ -1206,6 +1276,27 @@ class SheetsService {
               endRowIndex: zeroIndex + 1,
               startColumnIndex: 2,
               endColumnIndex: 3,
+            ),
+            cell: sheets.CellData(
+              userEnteredFormat: sheets.CellFormat(
+                numberFormat: sheets.NumberFormat(
+                  type: 'NUMBER',
+                  pattern: '#,##0.00',
+                ),
+              ),
+            ),
+            fields: 'userEnteredFormat.numberFormat',
+          ),
+        ),
+        // Number format for converted amount column (G = index 6)
+        sheets.Request(
+          repeatCell: sheets.RepeatCellRequest(
+            range: sheets.GridRange(
+              sheetId: sheetId,
+              startRowIndex: zeroIndex,
+              endRowIndex: zeroIndex + 1,
+              startColumnIndex: 6,
+              endColumnIndex: 7,
             ),
             cell: sheets.CellData(
               userEnteredFormat: sheets.CellFormat(
@@ -1228,7 +1319,7 @@ class SheetsService {
   /// Check if a drive link already exists in column F (idempotency).
   /// Column F now contains HYPERLINK formulas, so we check if the cell
   /// value (display text) or the raw formula contains the URL.
-  /// Check if a receipt_id already exists in column G of the sheet.
+  /// Check if a receipt_id already exists in column H of the sheet.
   Future<bool> _isReceiptIdInSheet(
     sheets.SheetsApi api,
     String spreadsheetId,
@@ -1238,7 +1329,7 @@ class SheetsService {
     try {
       final resp = await api.spreadsheets.values.get(
         spreadsheetId,
-        '$tabName!G:G',
+        '$tabName!H:H',
       );
       if (resp.values == null) return false;
       for (final row in resp.values!) {
@@ -1289,8 +1380,8 @@ class SheetsService {
   /// Column width requests for the main data sheet.
   List<sheets.Request> _columnWidthRequests(int sheetId) {
     // A: חודש(90), B: שם עסק(200), C: סכום(100), D: מטבע(70),
-    // E: קטגוריה(120), F: קישור(280), G: מזהה קבלה(36, hidden)
-    const widths = [90, 200, 100, 70, 120, 280, 36];
+    // E: קטגוריה(120), F: קישור(280), G: סכום בש"ח(110, hidden), H: מזהה קבלה(36, hidden)
+    const widths = [90, 200, 100, 70, 120, 280, 110, 36];
     return List.generate(widths.length, (i) {
       return sheets.Request(
         updateDimensionProperties: sheets.UpdateDimensionPropertiesRequest(
@@ -1302,7 +1393,7 @@ class SheetsService {
           ),
           properties: sheets.DimensionProperties(
             pixelSize: widths[i],
-            hiddenByUser: i == 6,
+            hiddenByUser: i >= 6,
           ),
           fields: 'pixelSize,hiddenByUser',
         ),

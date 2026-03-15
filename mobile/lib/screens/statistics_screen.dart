@@ -3,7 +3,7 @@
 /// Shows a year/month-filtered breakdown of expenses with a pie chart.
 /// Data comes from local SQLite receipts whose status is reviewed or synced —
 /// the same records written to Google Sheets — so the totals match the
-/// "סיכום YYYY" tab (same fields: totalAmount grouped by category).
+/// "סיכום YYYY" tab (same fields: converted ILS amount grouped by category).
 
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -56,7 +56,7 @@ class _StatisticsScreenState extends State<StatisticsScreen>
     final receipts = appState.receipts
         .where((r) =>
             r.status == ReceiptStatus.synced &&
-            r.totalAmount != null &&
+        r.reportingAmountIls != null &&
             r.category != null &&
             r.category!.isNotEmpty)
         .toList();
@@ -104,7 +104,7 @@ class _StatisticsScreenState extends State<StatisticsScreen>
     final categoryTotals = <String, double>{};
     for (final r in filtered) {
       categoryTotals[r.category!] =
-          (categoryTotals[r.category!] ?? 0) + r.totalAmount!;
+          (categoryTotals[r.category!] ?? 0) + r.reportingAmountIls!;
     }
     categoryTotals.removeWhere((_, v) => v <= 0);
 

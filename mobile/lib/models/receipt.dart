@@ -2,6 +2,8 @@
 /// Maps to the `receipts` table in SQLite and the row in Google Sheets.
 
 class Receipt {
+  static const Object _unset = Object();
+
   final String id; // UUID, stable across all systems
   final DateTime captureTimestamp;
   String imagePath; // Local file path (JPEG thumbnail for display)
@@ -10,6 +12,9 @@ class Receipt {
   String? receiptDate; // ISO date YYYY-MM-DD
   double? totalAmount;
   String currency;
+  double? convertedAmountIls;
+  double? finalRateUsed;
+  String? finalRateDate;
   String? category;
   String? driveFileId;
   String? driveFileLink;
@@ -30,6 +35,9 @@ class Receipt {
     this.receiptDate,
     this.totalAmount,
     this.currency = '',
+    this.convertedAmountIls,
+    this.finalRateUsed,
+    this.finalRateDate,
     this.category,
     this.driveFileId,
     this.driveFileLink,
@@ -83,6 +91,9 @@ class Receipt {
       'receipt_date': receiptDate,
       'total_amount': totalAmount,
       'currency': currency,
+      'converted_amount_ils': convertedAmountIls,
+      'final_rate_used': finalRateUsed,
+      'final_rate_date': finalRateDate,
       'category': category,
       'drive_file_id': driveFileId,
       'drive_file_link': driveFileLink,
@@ -111,6 +122,13 @@ class Receipt {
           ? (map['total_amount'] as num).toDouble()
           : null,
       currency: (map['currency'] as String?) ?? '',
+        convertedAmountIls: map['converted_amount_ils'] != null
+          ? (map['converted_amount_ils'] as num).toDouble()
+          : null,
+        finalRateUsed: map['final_rate_used'] != null
+          ? (map['final_rate_used'] as num).toDouble()
+          : null,
+        finalRateDate: map['final_rate_date'] as String?,
       category: map['category'] as String?,
       driveFileId: map['drive_file_id'] as String?,
       driveFileLink: map['drive_file_link'] as String?,
@@ -134,39 +152,71 @@ class Receipt {
   }
 
   Receipt copyWith({
-    String? merchantName,
-    String? receiptDate,
-    double? totalAmount,
+    Object? merchantName = _unset,
+    Object? receiptDate = _unset,
+    Object? totalAmount = _unset,
     String? currency,
-    String? category,
-    String? driveFileId,
-    String? driveFileLink,
-    String? rawOcrText,
-    double? overallConfidence,
-    Map<String, double>? fieldConfidences,
+    Object? convertedAmountIls = _unset,
+    Object? finalRateUsed = _unset,
+    Object? finalRateDate = _unset,
+    Object? category = _unset,
+    Object? driveFileId = _unset,
+    Object? driveFileLink = _unset,
+    Object? rawOcrText = _unset,
+    Object? overallConfidence = _unset,
+    Object? fieldConfidences = _unset,
     ReceiptStatus? status,
     String? imagePath,
-    String? pdfPath,
-    String? sourceType,
+    Object? pdfPath = _unset,
+    Object? sourceType = _unset,
     bool clearPdfPath = false,
   }) {
     return Receipt(
       id: id,
       captureTimestamp: captureTimestamp,
       imagePath: imagePath ?? this.imagePath,
-      pdfPath: clearPdfPath ? null : (pdfPath ?? this.pdfPath),
-      merchantName: merchantName ?? this.merchantName,
-      receiptDate: receiptDate ?? this.receiptDate,
-      totalAmount: totalAmount ?? this.totalAmount,
+      pdfPath: clearPdfPath
+        ? null
+        : (pdfPath == _unset ? this.pdfPath : pdfPath as String?),
+      merchantName: merchantName == _unset
+        ? this.merchantName
+        : merchantName as String?,
+      receiptDate: receiptDate == _unset
+        ? this.receiptDate
+        : receiptDate as String?,
+      totalAmount: totalAmount == _unset
+        ? this.totalAmount
+        : totalAmount as double?,
       currency: currency ?? this.currency,
-      category: category ?? this.category,
-      driveFileId: driveFileId ?? this.driveFileId,
-      driveFileLink: driveFileLink ?? this.driveFileLink,
-      rawOcrText: rawOcrText ?? this.rawOcrText,
-      overallConfidence: overallConfidence ?? this.overallConfidence,
-      fieldConfidences: fieldConfidences ?? this.fieldConfidences,
+      convertedAmountIls: convertedAmountIls == _unset
+        ? this.convertedAmountIls
+        : convertedAmountIls as double?,
+      finalRateUsed: finalRateUsed == _unset
+        ? this.finalRateUsed
+        : finalRateUsed as double?,
+      finalRateDate: finalRateDate == _unset
+        ? this.finalRateDate
+        : finalRateDate as String?,
+      category: category == _unset ? this.category : category as String?,
+      driveFileId: driveFileId == _unset
+        ? this.driveFileId
+        : driveFileId as String?,
+      driveFileLink: driveFileLink == _unset
+        ? this.driveFileLink
+        : driveFileLink as String?,
+      rawOcrText: rawOcrText == _unset
+        ? this.rawOcrText
+        : rawOcrText as String?,
+      overallConfidence: overallConfidence == _unset
+        ? this.overallConfidence
+        : overallConfidence as double?,
+      fieldConfidences: fieldConfidences == _unset
+        ? this.fieldConfidences
+        : fieldConfidences as Map<String, double>?,
       status: status ?? this.status,
-      sourceType: sourceType ?? this.sourceType,
+      sourceType: sourceType == _unset
+        ? this.sourceType
+        : sourceType as String?,
       createdAt: createdAt,
       updatedAt: DateTime.now(),
     );
@@ -213,8 +263,37 @@ class Receipt {
     return date.year * 100 + date.month;
   }
 
-  /// Row values matching the 7-column Sheets layout:
-  /// חודש | שם עסק | סכום | מטבע | קטגוריה | קישור לתמונה | מזהה
+  /// Authoritative amount for totals/statistics in ILS.
+  /// Falls back only for legacy local ILS rows created before conversion support.
+  double? get reportingAmountIls {
+    if (convertedAmountIls != null) return convertedAmountIls;
+    return isIlsCurrency ? totalAmount : null;
+  }
+
+  String get normalizedCurrency {
+    final value = currency.trim().toUpperCase();
+    if (value.isEmpty) return '';
+    return value;
+  }
+
+  bool get isIlsCurrency => normalizedCurrency == 'ILS' || normalizedCurrency.isEmpty;
+
+  String get currencySymbol {
+    switch (normalizedCurrency) {
+      case 'USD':
+        return r'$';
+      case 'EUR':
+        return '€';
+      case 'ILS':
+      case '':
+        return '₪';
+      default:
+        return normalizedCurrency;
+    }
+  }
+
+  /// Row values matching the 8-column Sheets layout:
+  /// חודש | שם עסק | סכום מקורי | מטבע | קטגוריה | קישור לתמונה | סכום ב-₪ | מזהה
   List<dynamic> toSheetsRow() {
     // Use HYPERLINK formula so the cell shows short text instead of a raw URL
     final linkCell = (driveFileLink != null && driveFileLink!.isNotEmpty)
@@ -228,6 +307,7 @@ class Receipt {
       currency,
       category ?? '',
       linkCell,
+      reportingAmountIls?.toString() ?? '',
       id,
     ];
   }

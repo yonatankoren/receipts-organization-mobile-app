@@ -15,6 +15,7 @@
 ///   - Mismatch → dialog to choose amount or cancel
 ///   - Cancel cleans up receipt + image without any Drive/Sheets writes
 
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -22,6 +23,7 @@ import 'package:provider/provider.dart';
 import '../db/database_helper.dart';
 import '../models/receipt.dart';
 import '../providers/app_state.dart';
+import '../services/currency_conversion_service.dart';
 import '../services/custom_category_service.dart';
 import '../services/sync_engine.dart';
 import '../widgets/loading_indicator.dart';
@@ -78,6 +80,11 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
   bool _isLoading = true;
   bool _isSaving = false;
   bool _isDeleting = false;
+  bool _isLoadingPreview = false;
+  double? _estimatedPreviewIls;
+  String? _previewStatusText;
+  Timer? _previewDebounce;
+  int _previewRequestId = 0;
 
   // Controllers for editable fields
   final _merchantController = TextEditingController();
@@ -95,6 +102,7 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
   @override
   void initState() {
     super.initState();
+    _amountController.addListener(_schedulePreviewRefresh);
     _loadTopCategories();
     _loadReceipt();
   }
@@ -108,6 +116,7 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
 
   @override
   void dispose() {
+    _previewDebounce?.cancel();
     _merchantController.dispose();
     _dateController.dispose();
     _amountController.dispose();
@@ -211,6 +220,91 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
       (normalizedCategory != null && normalizedCategory.isNotEmpty)
         ? normalizedCategory
         : 'אחר';
+
+    _schedulePreviewRefresh(immediate: true);
+  }
+
+  double? _parseAmountInput(String raw) {
+    final normalized = raw.replaceAll(',', '.').trim();
+    if (normalized.isEmpty) return null;
+    return double.tryParse(normalized);
+  }
+
+  void _schedulePreviewRefresh({bool immediate = false}) {
+    _previewDebounce?.cancel();
+    if (immediate) {
+      _refreshEstimatedPreview();
+      return;
+    }
+    _previewDebounce = Timer(
+      const Duration(milliseconds: 220),
+      _refreshEstimatedPreview,
+    );
+  }
+
+  bool get _shouldShowPreview {
+    final currency = _normalizeCurrency(_selectedCurrency);
+    return currency.isNotEmpty &&
+        currency != 'ILS' &&
+        _parseAmountInput(_amountController.text) != null;
+  }
+
+  Future<void> _refreshEstimatedPreview() async {
+    final currency = _normalizeCurrency(_selectedCurrency);
+    final amount = _parseAmountInput(_amountController.text);
+
+    if (currency.isEmpty || currency == 'ILS' || amount == null) {
+      if (mounted) {
+        setState(() {
+          _estimatedPreviewIls = null;
+          _previewStatusText = null;
+          _isLoadingPreview = false;
+        });
+      }
+      return;
+    }
+
+    final requestId = ++_previewRequestId;
+    if (mounted) {
+      setState(() {
+        _isLoadingPreview = true;
+        _previewStatusText = null;
+      });
+    }
+
+    try {
+      final estimate = await CurrencyConversionService.instance
+          .getEstimatedIlsPreview(
+        amount: amount,
+        fromCurrency: currency,
+      );
+
+      if (!mounted || requestId != _previewRequestId) return;
+      setState(() {
+        _estimatedPreviewIls = estimate;
+        _isLoadingPreview = false;
+        _previewStatusText = estimate == null ? 'הערכה לא זמינה כרגע' : null;
+      });
+    } catch (_) {
+      if (!mounted || requestId != _previewRequestId) return;
+      setState(() {
+        _estimatedPreviewIls = null;
+        _isLoadingPreview = false;
+        _previewStatusText = 'הערכה לא זמינה כרגע';
+      });
+    }
+  }
+
+  String _formatIlsAmount(double amount) => '₪${amount.toStringAsFixed(2)}';
+
+  String _formatReceiptAmount(double amount, String? currencyCode) {
+    final normalizedCurrency = _normalizeCurrency(currencyCode, fallback: 'ILS');
+    final symbol = switch (normalizedCurrency) {
+      'USD' => r'$',
+      'EUR' => '€',
+      _ => '₪',
+    };
+    return '$symbol${amount.toStringAsFixed(2)}';
   }
 
   /// Poll every 2 seconds until processing is complete
@@ -241,7 +335,7 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
     }
 
     final appState = context.read<AppState>();
-    final receiptAmount = double.tryParse(_amountController.text);
+    final receiptAmount = _parseAmountInput(_amountController.text);
 
     // --- Duplicate detection (runs before any write) ---
     {
@@ -270,32 +364,15 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
       }
     }
 
-    // --- Expense mode: check for amount mismatch ---
-    if (_isExpenseMode && widget.reportedAmount != null && receiptAmount != null) {
-      final reported = widget.reportedAmount!;
-      final diff = (receiptAmount - reported).abs();
-
-      // Mismatch threshold: more than 0.01 difference
-      if (diff > 0.01) {
-        final chosenAmount = await _showMismatchDialog(reported, receiptAmount);
-        if (chosenAmount == null) {
-          // User cancelled — do nothing, stay on this screen
-          return;
-        }
-        // Update the amount field with the chosen amount
-        _amountController.text = chosenAmount.toStringAsFixed(2);
-      }
-    }
-
     setState(() => _isSaving = true);
 
     try {
-      final finalAmount = double.tryParse(_amountController.text);
+      final finalAmount = _parseAmountInput(_amountController.text);
       final finalIsoDate = _dateController.text.isNotEmpty
           ? _displayToIso(_dateController.text)
           : null;
 
-      final updated = _receipt!.copyWith(
+      final draft = _receipt!.copyWith(
         merchantName: _merchantController.text.isNotEmpty
             ? _merchantController.text
             : null,
@@ -308,19 +385,43 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
         status: ReceiptStatus.reviewed,
       );
 
+      var prepared = await appState.prepareReviewedReceipt(draft);
+
+      // Expense mismatch is only meaningful when both values are in ILS.
+      if (_isExpenseMode &&
+          widget.reportedAmount != null &&
+          finalCurrency == 'ILS' &&
+          prepared.reportingAmountIls != null) {
+        final reported = widget.reportedAmount!;
+        final diff = (prepared.reportingAmountIls! - reported).abs();
+
+        if (diff > 0.01) {
+          final chosenAmount = await _showMismatchDialog(
+            reported,
+            prepared.reportingAmountIls!,
+          );
+          if (chosenAmount == null) {
+            return;
+          }
+          _amountController.text = chosenAmount.toStringAsFixed(2);
+          _schedulePreviewRefresh(immediate: true);
+          prepared = await appState.prepareReviewedReceipt(
+            draft.copyWith(totalAmount: chosenAmount),
+          );
+        }
+      }
+
       if (_isExpenseMode) {
+        await appState.saveReview(prepared, triggerSync: false);
+
         // Expense mode: confirm receipt, enqueue sync jobs, delete expense
         await appState.confirmExpenseReceipt(
               receiptId: widget.receiptId,
               expenseId: widget.linkedExpenseId!,
-              chosenAmount: finalAmount ?? widget.reportedAmount ?? 0,
             );
-
-        // Also save any edits the user made to other fields
-        await appState.saveReview(updated);
       } else {
         // Normal mode
-        await appState.saveReview(updated);
+        await appState.saveReview(prepared);
       }
 
       if (!mounted) return;
@@ -364,9 +465,10 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
       if (_isSaving && mounted && Navigator.of(context).canPop()) {
         Navigator.of(context).pop();
       }
+      final message = e.toString().replaceFirst('Exception: ', '').trim();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('שגיאה בשמירה: $e')),
+          SnackBar(content: Text('שגיאה בשמירה: $message')),
         );
       }
     } finally {
@@ -454,7 +556,10 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
                     if (existing.totalAmount != null)
                       _duplicateInfoRow(
                         Icons.payments, 'סכום',
-                        '₪${existing.totalAmount!.toStringAsFixed(2)}',
+                        _formatReceiptAmount(
+                          existing.totalAmount!,
+                          existing.currency,
+                        ),
                       ),
                   ],
                 ),
@@ -870,13 +975,22 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
             children: [
               Expanded(
                 flex: 2,
-                child: _buildField(
-                  label: 'סכום',
-                  controller: _amountController,
-                  icon: Icons.payments,
-                  confidence: confidences['total_amount'],
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    _buildField(
+                      label: 'סכום',
+                      controller: _amountController,
+                      icon: Icons.payments,
+                      confidence: confidences['total_amount'],
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                    ),
+                    if (_shouldShowPreview) ...[
+                      const SizedBox(height: 8),
+                      _buildConversionPreview(theme),
+                    ],
+                  ],
                 ),
               ),
               const SizedBox(width: 12),
@@ -1282,12 +1396,12 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
     return showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Currency required'),
-        content: const Text('please choose currency'),
+        title: const Text('יש לבחור מטבע'),
+        content: const Text('כדי לשמור את הקבלה, צריך לבחור מטבע.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('OK'),
+            child: const Text('אישור'),
           ),
         ],
       ),
@@ -1312,6 +1426,7 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
           setState(() {
             _selectedCurrency = value;
           });
+          _schedulePreviewRefresh(immediate: true);
         },
         isExpanded: true,
         decoration: InputDecoration(
@@ -1362,6 +1477,41 @@ class _ReviewAndFixScreenState extends State<ReviewAndFixScreen> {
         ],
       ),
     );
+  }
+
+  Widget _buildConversionPreview(ThemeData theme) {
+    final textStyle = theme.textTheme.bodySmall?.copyWith(
+      color: Colors.grey.shade600,
+      fontWeight: FontWeight.w500,
+    );
+
+    if (_isLoadingPreview && _estimatedPreviewIls == null) {
+      return Text(
+        'מחשב בקירוב…',
+        textAlign: TextAlign.right,
+        style: textStyle,
+      );
+    }
+
+    if (_estimatedPreviewIls != null) {
+      return Text(
+        '≈ ${_formatIlsAmount(_estimatedPreviewIls!)}',
+        textAlign: TextAlign.right,
+        style: textStyle?.copyWith(
+          color: Colors.grey.shade700,
+        ),
+      );
+    }
+
+    if (_previewStatusText != null) {
+      return Text(
+        _previewStatusText!,
+        textAlign: TextAlign.right,
+        style: textStyle,
+      );
+    }
+
+    return const SizedBox.shrink();
   }
 
   Widget _buildSaveBar(ThemeData theme) {
