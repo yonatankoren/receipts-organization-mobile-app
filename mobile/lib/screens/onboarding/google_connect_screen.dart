@@ -10,10 +10,12 @@
 
 import 'package:flutter/material.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
+import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
 import '../../services/storage_config_service.dart';
+import '../../providers/app_state.dart';
 import '../../utils/constants.dart';
-import '../camera_capture_screen.dart';
+import '../main_pager_screen.dart';
 import 'storage_setup_screen.dart';
 import '../../widgets/loading_indicator.dart';
 
@@ -62,6 +64,8 @@ class _GoogleConnectScreenState extends State<GoogleConnectScreen> {
         final validation = await config.validateAccess();
         if (!mounted) return;
         if (validation.allOk) {
+          await _maybeRestoreRecentDataIfNeeded();
+          if (!mounted) return;
           setState(() => _statusMessage = '✓ הכל מוכן!');
           await Future.delayed(const Duration(milliseconds: 500));
           if (!mounted) return;
@@ -77,6 +81,8 @@ class _GoogleConnectScreenState extends State<GoogleConnectScreen> {
       if (!mounted) return;
 
       if (found) {
+        await _maybeRestoreRecentDataIfNeeded();
+        if (!mounted) return;
         setState(() => _statusMessage = '✓ מצאנו את ההוצאות שלך!');
         await Future.delayed(const Duration(milliseconds: 800));
         if (!mounted) return;
@@ -176,9 +182,33 @@ class _GoogleConnectScreenState extends State<GoogleConnectScreen> {
 
   // ──────────────────── Navigation ────────────────────
 
+  Future<void> _maybeRestoreRecentDataIfNeeded() async {
+    setState(() => _statusMessage = 'טוענים נתונים אחרונים (6 חודשים)...');
+
+    try {
+      final restored = await context
+          .read<AppState>()
+          .restoreRecentReceiptsFromSheetsIfNeeded(
+            months: 6,
+            onProgress: (message) {
+              if (!mounted) return;
+              setState(() => _statusMessage = message);
+            },
+          );
+
+      if (!mounted) return;
+      if (restored > 0) {
+        setState(() => _statusMessage = '✓ סיימנו לטעון את הנתונים שלך');
+      }
+    } catch (e) {
+      // Non-fatal: keep onboarding flow resilient.
+      debugPrint('Restore from Sheets failed: $e');
+    }
+  }
+
   void _goToCamera() {
     Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const CameraCaptureScreen()),
+      MaterialPageRoute(builder: (_) => const MainPagerScreen()),
       (_) => false,
     );
   }

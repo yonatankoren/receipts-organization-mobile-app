@@ -40,6 +40,9 @@ class AppState extends ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get error => _error;
 
+  static const String _restoredImagePlaceholderRoot =
+      '/remote-only/receipts';
+
   /// Receipts grouped by month
   Map<String, List<Receipt>> get receiptsByMonth {
     final map = <String, List<Receipt>>{};
@@ -67,6 +70,65 @@ class AppState extends ChangeNotifier {
     _isLoading = false;
     await loadLaunchDashboardCounts(notify: false);
     notifyListeners();
+  }
+
+  /// Rebuild local receipts from Google Sheets (recent months only).
+  ///
+  /// Safety:
+  /// - Runs only when local receipts table is empty.
+  /// - Uses upsert semantics (`insertReceipt` with replace on conflict).
+  /// - Stores lightweight rows needed for list/statistics without heavy OCR data.
+  Future<int> restoreRecentReceiptsFromSheetsIfNeeded({
+    int months = 6,
+    void Function(String message)? onProgress,
+  }) async {
+    final existingCount = await _db.getReceiptCount();
+    if (existingCount > 0) {
+      debugPrint(
+        'Restore: skipped (local DB already has $existingCount receipts)',
+      );
+      return 0;
+    }
+
+    onProgress?.call('טוענים נתונים אחרונים...');
+
+    final rows = await SheetsService.instance
+        .fetchRecentReceiptsForRestore(months: months);
+    if (rows.isEmpty) {
+      debugPrint('Restore: no recent rows found in Sheets');
+      await loadLaunchDashboardCounts();
+      return 0;
+    }
+
+    for (final row in rows) {
+      final monthAnchor = _monthAnchorFromKey(row.monthKey);
+      final currency = _normalizeCurrency(row.currency);
+
+      final receipt = Receipt(
+        id: row.receiptId,
+        captureTimestamp: monthAnchor,
+        imagePath: '$_restoredImagePlaceholderRoot/${row.receiptId}.jpg',
+        merchantName: row.merchantName,
+        totalAmount: row.totalAmount,
+        currency: currency,
+        convertedAmountIls: row.convertedAmountIls,
+        category: (row.category != null && row.category!.trim().isNotEmpty)
+            ? row.category!.trim()
+            : 'אחר',
+        driveFileLink: row.driveFileLink,
+        driveFileId: _extractDriveFileId(row.driveFileLink),
+        status: ReceiptStatus.synced,
+        sourceType: 'restore',
+        createdAt: monthAnchor,
+        updatedAt: DateTime.now(),
+      );
+
+      await _db.insertReceipt(receipt);
+    }
+
+    await loadReceipts();
+    debugPrint('Restore: inserted/updated ${rows.length} receipts from Sheets');
+    return rows.length;
   }
 
   /// Loads only lightweight launch/dashboard counts from SQLite.
@@ -474,6 +536,34 @@ class AppState extends ChangeNotifier {
       default:
         return _allowedCurrencies.contains(value) ? value : '';
     }
+  }
+
+  DateTime _monthAnchorFromKey(String monthKey) {
+    final parts = monthKey.split('/');
+    if (parts.length == 2) {
+      final month = int.tryParse(parts[0]);
+      final year = int.tryParse(parts[1]);
+      if (month != null && year != null && month >= 1 && month <= 12) {
+        return DateTime(year, month, 1, 12);
+      }
+    }
+    return DateTime.now();
+  }
+
+  String? _extractDriveFileId(String? link) {
+    if (link == null || link.isEmpty) return null;
+    final byPath = RegExp(r'/d/([A-Za-z0-9_-]+)').firstMatch(link);
+    if (byPath != null) {
+      final value = byPath.group(1);
+      if (value != null && value.isNotEmpty) return value;
+    }
+
+    final byQuery = RegExp(r'[?&]id=([A-Za-z0-9_-]+)').firstMatch(link);
+    if (byQuery != null) {
+      final value = byQuery.group(1);
+      if (value != null && value.isNotEmpty) return value;
+    }
+    return null;
   }
 
   /// Add a new manual expense (no receipt)

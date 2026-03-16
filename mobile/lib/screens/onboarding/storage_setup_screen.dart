@@ -11,7 +11,7 @@ import 'package:googleapis/sheets/v4.dart' as sheets;
 import '../../services/auth_service.dart';
 import '../../services/storage_config_service.dart';
 import '../../utils/constants.dart';
-import '../camera_capture_screen.dart';
+import '../main_pager_screen.dart';
 import '../../widgets/loading_indicator.dart';
 
 class StorageSetupScreen extends StatefulWidget {
@@ -127,7 +127,7 @@ class _StorageSetupScreenState extends State<StorageSetupScreen> {
       // 4. Navigate to the main app
       if (mounted) {
         Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (_) => const CameraCaptureScreen()),
+          MaterialPageRoute(builder: (_) => const MainPagerScreen()),
           (_) => false,
         );
       }

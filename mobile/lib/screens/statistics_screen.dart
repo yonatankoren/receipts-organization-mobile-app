@@ -12,6 +12,7 @@ import 'package:provider/provider.dart';
 import '../models/receipt.dart';
 import '../providers/app_state.dart';
 import '../services/custom_category_service.dart';
+import '../services/sheets_service.dart';
 import '../utils/constants.dart';
 
 class StatisticsScreen extends StatefulWidget {
@@ -25,6 +26,9 @@ class _StatisticsScreenState extends State<StatisticsScreen>
     with AutomaticKeepAliveClientMixin {
   int? _selectedYear;
   int? _selectedMonth; // null = full year
+  bool _isLoadingRemoteStats = true;
+  Map<int, Map<String, double>> _remoteYearlyCategoryTotals = {};
+  Map<int, Map<int, Map<String, double>>> _remoteMonthlyCategoryTotals = {};
 
   @override
   bool get wantKeepAlive => true;
@@ -34,7 +38,42 @@ class _StatisticsScreenState extends State<StatisticsScreen>
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppState>().loadReceipts();
+      _loadRemoteSummaryStats();
     });
+  }
+
+  Future<void> _loadRemoteSummaryStats() async {
+    try {
+      final results = await Future.wait([
+        SheetsService.instance.fetchYearlySummaryStats(),
+        SheetsService.instance.fetchYearlyMonthlyCategoryStats(),
+      ]);
+
+      final yearly = results[0] as List<YearlySummaryStats>;
+      final monthly = results[1] as List<YearlyMonthlyCategoryStats>;
+      if (!mounted) return;
+
+      final map = <int, Map<String, double>>{};
+      for (final y in yearly) {
+        map[y.year] = y.categoryTotals;
+      }
+
+      final monthMap = <int, Map<int, Map<String, double>>>{};
+      for (final y in monthly) {
+        monthMap[y.year] = y.monthCategoryTotals;
+      }
+
+      setState(() {
+        _remoteYearlyCategoryTotals = map;
+        _remoteMonthlyCategoryTotals = monthMap;
+        _isLoadingRemoteStats = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isLoadingRemoteStats = false;
+      });
+    }
   }
 
   /// Parse the month number (1-12) from a receipt, using the same logic
@@ -50,6 +89,101 @@ class _StatisticsScreenState extends State<StatisticsScreen>
   @override
   Widget build(BuildContext context) {
     super.build(context);
+
+    if (_isLoadingRemoteStats) {
+      return _buildEmptyState('טוען סטטיסטיקות...');
+    }
+
+    if (_remoteYearlyCategoryTotals.isNotEmpty) {
+      return _buildFromRemoteSummary();
+    }
+
+    return _buildFromLocalReceipts();
+  }
+
+  Widget _buildFromRemoteSummary() {
+    final years = _remoteYearlyCategoryTotals.keys.toList()
+      ..sort((a, b) => b.compareTo(a));
+
+    if (years.isEmpty) {
+      return _buildEmptyState('אין נתונים להצגה');
+    }
+
+    final year = (_selectedYear != null && years.contains(_selectedYear))
+        ? _selectedYear!
+        : years.first;
+
+    if (_selectedYear != year) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          setState(() {
+            _selectedYear = year;
+            _selectedMonth = null;
+          });
+        }
+      });
+    }
+
+    final monthsWithData =
+        (_remoteMonthlyCategoryTotals[year]?.keys.toSet() ?? <int>{});
+    if (_selectedMonth != null && !monthsWithData.contains(_selectedMonth)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => _selectedMonth = null);
+      });
+    }
+
+    final categoryTotals = _selectedMonth != null
+        ? Map<String, double>.from(
+            _remoteMonthlyCategoryTotals[year]?[_selectedMonth!] ??
+                const <String, double>{},
+          )
+        : Map<String, double>.from(
+            _remoteYearlyCategoryTotals[year] ?? const <String, double>{},
+          );
+
+    categoryTotals.removeWhere((_, v) => v <= 0);
+
+    final total = categoryTotals.values.fold(0.0, (s, v) => s + v);
+    final sorted = categoryTotals.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    final fmt = NumberFormat('#,##0.00', 'he_IL');
+
+    return Scaffold(
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        child: Column(
+          children: [
+            const SizedBox(height: 16),
+            if (years.length > 1) ...[
+              _buildYearSelector(years, year),
+              const SizedBox(height: 8),
+            ],
+            _buildMonthSelector(monthsWithData),
+            const SizedBox(height: 16),
+            Expanded(
+              child: sorted.isEmpty
+                  ? Center(
+                      child: Text(
+                        _selectedMonth != null
+                            ? 'אין הוצאות בחודש זה'
+                            : 'אין הוצאות בשנה זו',
+                        style: TextStyle(
+                          fontSize: 18,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
+                    )
+                  : _buildContent(sorted, total, fmt),
+            ),
+            const SizedBox(height: 28),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFromLocalReceipts() {
     final appState = context.watch<AppState>();
 
     // Only include fully-synced receipts — data is in Drive + Spreadsheet.
@@ -75,7 +209,12 @@ class _StatisticsScreenState extends State<StatisticsScreen>
         : years.first;
     if (_selectedYear != year) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) setState(() => _selectedYear = year);
+        if (mounted) {
+          setState(() {
+            _selectedYear = year;
+            _selectedMonth = null;
+          });
+        }
       });
     }
 
@@ -86,18 +225,15 @@ class _StatisticsScreenState extends State<StatisticsScreen>
     // Which months have data (for enabling/disabling month chips)
     final monthsWithData = yearReceipts.map(_receiptMonth).toSet();
 
-    // Auto-reset month if the selected month lost all its data (e.g. deletion)
+    // Auto-reset month if the selected month lost all its data
     if (_selectedMonth != null && !monthsWithData.contains(_selectedMonth)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) setState(() => _selectedMonth = null);
       });
     }
 
-    // Apply month filter
     final filtered = _selectedMonth != null
-        ? yearReceipts
-            .where((r) => _receiptMonth(r) == _selectedMonth)
-            .toList()
+        ? yearReceipts.where((r) => _receiptMonth(r) == _selectedMonth).toList()
         : yearReceipts;
 
     // Group by category, sum amounts — skip categories with total ≤ 0
@@ -275,7 +411,6 @@ class _StatisticsScreenState extends State<StatisticsScreen>
             selected: selected,
             onSelected: (_) => setState(() {
               _selectedYear = y;
-              _selectedMonth = null;
             }),
             selectedColor: Colors.blue.shade100,
             backgroundColor: Colors.grey.shade100,

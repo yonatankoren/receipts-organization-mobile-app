@@ -176,6 +176,12 @@ class DatabaseHelper {
     return maps.map((m) => Receipt.fromMap(m)).toList();
   }
 
+  Future<int> getReceiptCount() async {
+    final db = await database;
+    final result = await db.rawQuery('SELECT COUNT(*) as cnt FROM receipts');
+    return (result.first['cnt'] as int?) ?? 0;
+  }
+
   Future<List<Receipt>> getReceiptsByMonth(String monthKey) async {
     final db = await database;
     // monthKey is "YYYY-MM", match against receipt_date or capture_timestamp

@@ -19,6 +19,48 @@ import 'storage_config_service.dart';
 import '../models/receipt.dart';
 import '../utils/constants.dart';
 
+class RestoredReceiptRow {
+  final String receiptId;
+  final String monthKey; // MM/YYYY
+  final String? merchantName;
+  final double? totalAmount;
+  final String currency;
+  final String? category;
+  final double? convertedAmountIls;
+  final String? driveFileLink;
+
+  const RestoredReceiptRow({
+    required this.receiptId,
+    required this.monthKey,
+    required this.merchantName,
+    required this.totalAmount,
+    required this.currency,
+    required this.category,
+    required this.convertedAmountIls,
+    required this.driveFileLink,
+  });
+}
+
+class YearlySummaryStats {
+  final int year;
+  final Map<String, double> categoryTotals;
+
+  const YearlySummaryStats({
+    required this.year,
+    required this.categoryTotals,
+  });
+}
+
+class YearlyMonthlyCategoryStats {
+  final int year;
+  final Map<int, Map<String, double>> monthCategoryTotals;
+
+  const YearlyMonthlyCategoryStats({
+    required this.year,
+    required this.monthCategoryTotals,
+  });
+}
+
 class SheetsService {
   static final SheetsService instance = SheetsService._();
   SheetsService._();
@@ -153,6 +195,259 @@ class SheetsService {
     return 'https://docs.google.com/spreadsheets/d/$id$authParam';
   }
 
+  // ────────────────── Restore (read from Sheets) ──────────────────────
+
+  /// Read recent receipt rows from year-based expenses tabs and return a
+  /// deduplicated lightweight dataset for local DB hydration.
+  ///
+  /// Reads only the needed year tabs for the requested month window.
+  Future<List<RestoredReceiptRow>> fetchRecentReceiptsForRestore({
+    int months = 6,
+  }) async {
+    final spreadsheetId = getSpreadsheetId();
+    if (spreadsheetId == null || spreadsheetId.isEmpty) return const [];
+
+    final client = await AuthService.instance.getAuthenticatedClient();
+    if (client == null) {
+      throw Exception('Not authenticated — cannot read from Sheets');
+    }
+
+    try {
+      final api = sheets.SheetsApi(client);
+      final targetMonths = _recentMonthKeys(months);
+      final targetYears = targetMonths
+          .map((m) => int.tryParse(m.split('/').last) ?? 0)
+          .where((y) => y > 0)
+          .toSet()
+          .toList()
+        ..sort();
+
+      final byId = <String, RestoredReceiptRow>{};
+
+      final tabsToTry = <String>{
+        for (final year in targetYears) _expensesTabName(year),
+        AppConstants.sheetsDefaultTabName, // legacy single-tab layout
+      };
+
+      for (final tabName in tabsToTry) {
+
+        // A-H as computed values (numbers stay numeric, formulas are resolved)
+        // F as formula text (to recover hyperlink URL when available).
+        sheets.ValueRange rowsResp;
+        sheets.ValueRange linksResp;
+        try {
+          rowsResp = await api.spreadsheets.values.get(
+            spreadsheetId,
+            '$tabName!A2:H',
+            valueRenderOption: 'UNFORMATTED_VALUE',
+          );
+          linksResp = await api.spreadsheets.values.get(
+            spreadsheetId,
+            '$tabName!F2:F',
+            valueRenderOption: 'FORMULA',
+          );
+        } catch (e) {
+          // Missing year tab is expected in some files.
+          debugPrint('Sheets restore: skipped tab "$tabName": $e');
+          continue;
+        }
+
+        final rows = rowsResp.values ?? const <List<Object?>>[];
+        final links = linksResp.values ?? const <List<Object?>>[];
+
+        for (int i = 0; i < rows.length; i++) {
+          final row = rows[i];
+          if (row.isEmpty) continue;
+
+          final monthKey = _normalizeMonthKey(_cell(row, 0));
+          if (monthKey == null || !targetMonths.contains(monthKey)) {
+            continue;
+          }
+
+          final receiptIdRaw = _cell(row, 7)?.trim();
+          final formulaOrText = i < links.length ? _cell(links[i], 0) : null;
+          final driveLink = _extractUrlFromCell(formulaOrText);
+
+          final receiptId = (receiptIdRaw != null && receiptIdRaw.isNotEmpty)
+              ? receiptIdRaw
+              : _buildFallbackReceiptId(driveLink, monthKey, _cell(row, 1));
+
+          if (receiptId == null || receiptId.isEmpty) continue;
+
+          byId[receiptId] = RestoredReceiptRow(
+            receiptId: receiptId,
+            monthKey: monthKey,
+            merchantName: _cell(row, 1),
+            totalAmount: _toDouble(_cell(row, 2)),
+            currency: (_cell(row, 3) ?? '').trim().toUpperCase(),
+            category: _cell(row, 4),
+            convertedAmountIls: _toDouble(_cell(row, 6)),
+            driveFileLink: driveLink,
+          );
+        }
+      }
+
+      debugPrint('Sheets restore: loaded ${byId.length} recent rows from Sheets');
+      return byId.values.toList();
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Read category totals from all available "סיכום YYYY" tabs.
+  ///
+  /// Returns one entry per year with category -> amount(ILS) totals,
+  /// excluding the total row ("סה"כ").
+  Future<List<YearlySummaryStats>> fetchYearlySummaryStats() async {
+    final spreadsheetId = getSpreadsheetId();
+    if (spreadsheetId == null || spreadsheetId.isEmpty) return const [];
+
+    final client = await AuthService.instance.getAuthenticatedClient();
+    if (client == null) {
+      throw Exception('Not authenticated — cannot read summary stats');
+    }
+
+    try {
+      final api = sheets.SheetsApi(client);
+      final meta = await api.spreadsheets.get(
+        spreadsheetId,
+        $fields: 'sheets(properties(title))',
+      );
+
+      final stats = <YearlySummaryStats>[];
+      final tabs = meta.sheets ?? const <sheets.Sheet>[];
+      final re = RegExp('^${RegExp.escape(AppConstants.totalsTabPrefix)}\\s+(\\d{4})\$');
+
+      for (final tab in tabs) {
+        final title = tab.properties?.title ?? '';
+        final m = re.firstMatch(title);
+        if (m == null) continue;
+
+        final year = int.tryParse(m.group(1)!);
+        if (year == null) continue;
+
+        final resp = await api.spreadsheets.values.get(
+          spreadsheetId,
+          '$title!A2:B1000',
+          valueRenderOption: 'UNFORMATTED_VALUE',
+        );
+
+        final values = resp.values ?? const <List<Object?>>[];
+        final categoryTotals = <String, double>{};
+
+        for (final row in values) {
+          final name = _cell(row, 0)?.trim() ?? '';
+          if (name.isEmpty) continue;
+          if (name.contains('סה"כ') || name.contains('סהכ') || name.contains('סה״כ')) {
+            break;
+          }
+
+          final amount = _toDouble(_cell(row, 1));
+          if (amount == null || amount <= 0) continue;
+          categoryTotals[name] = amount;
+        }
+
+        if (categoryTotals.isNotEmpty) {
+          stats.add(
+            YearlySummaryStats(
+              year: year,
+              categoryTotals: categoryTotals,
+            ),
+          );
+        }
+      }
+
+      stats.sort((a, b) => b.year.compareTo(a.year));
+      return stats;
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Read month+category totals (in ILS) from expenses tabs.
+  ///
+  /// Needed for month filtering in the statistics screen while keeping local DB
+  /// lightweight. Uses converted ILS column (G) as source of truth.
+  Future<List<YearlyMonthlyCategoryStats>> fetchYearlyMonthlyCategoryStats() async {
+    final spreadsheetId = getSpreadsheetId();
+    if (spreadsheetId == null || spreadsheetId.isEmpty) return const [];
+
+    final client = await AuthService.instance.getAuthenticatedClient();
+    if (client == null) {
+      throw Exception('Not authenticated — cannot read monthly stats');
+    }
+
+    try {
+      final api = sheets.SheetsApi(client);
+      final meta = await api.spreadsheets.get(
+        spreadsheetId,
+        $fields: 'sheets(properties(title))',
+      );
+
+      final result = <int, Map<int, Map<String, double>>>{};
+      final expensesRe = RegExp('^${RegExp.escape(AppConstants.expensesTabPrefix)}\\s+(\\d{4})\$');
+
+      final tabs = meta.sheets ?? const <sheets.Sheet>[];
+      for (final tab in tabs) {
+        final title = tab.properties?.title ?? '';
+        final match = expensesRe.firstMatch(title);
+
+        int? fixedYear;
+        if (match != null) {
+          fixedYear = int.tryParse(match.group(1)!);
+        } else if (title != AppConstants.sheetsDefaultTabName) {
+          continue;
+        }
+
+        final resp = await api.spreadsheets.values.get(
+          spreadsheetId,
+          '$title!A2:G',
+          valueRenderOption: 'UNFORMATTED_VALUE',
+        );
+
+        final rows = resp.values ?? const <List<Object?>>[];
+        for (final row in rows) {
+          final monthKey = _normalizeMonthKey(_cell(row, 0));
+          if (monthKey == null) continue;
+
+          final parts = monthKey.split('/');
+          if (parts.length != 2) continue;
+
+          final month = int.tryParse(parts[0]);
+          final parsedYear = int.tryParse(parts[1]);
+          if (month == null || parsedYear == null || month < 1 || month > 12) {
+            continue;
+          }
+
+          final year = fixedYear ?? parsedYear;
+          final category = (_cell(row, 4) ?? '').trim();
+          if (category.isEmpty) continue;
+
+          final amountIls = _toDouble(_cell(row, 6));
+          if (amountIls == null || amountIls <= 0) continue;
+
+          final yearMap = result.putIfAbsent(year, () => <int, Map<String, double>>{});
+          final monthMap = yearMap.putIfAbsent(month, () => <String, double>{});
+          monthMap[category] = (monthMap[category] ?? 0) + amountIls;
+        }
+      }
+
+      final stats = result.entries
+          .map(
+            (e) => YearlyMonthlyCategoryStats(
+              year: e.key,
+              monthCategoryTotals: e.value,
+            ),
+          )
+          .toList()
+        ..sort((a, b) => b.year.compareTo(a.year));
+
+      return stats;
+    } finally {
+      client.close();
+    }
+  }
+
   // ────────────────── Tab naming helpers ──────────────────────
 
   /// Returns "הוצאות YYYY" for the given year.
@@ -162,6 +457,117 @@ class SheetsService {
   /// Returns "סיכום YYYY" for the given year.
   String _totalsTabName(int year) =>
       '${AppConstants.totalsTabPrefix} $year';
+
+  Set<String> _recentMonthKeys(int months) {
+    final count = months <= 0 ? 1 : months;
+    final now = DateTime.now();
+    final keys = <String>{};
+    for (int i = 0; i < count; i++) {
+      final shifted = _addMonths(DateTime(now.year, now.month, 1), -i);
+      keys.add(
+        '${shifted.month.toString().padLeft(2, '0')}/${shifted.year}',
+      );
+    }
+    return keys;
+  }
+
+  DateTime _addMonths(DateTime base, int deltaMonths) {
+    final totalMonths = (base.year * 12 + (base.month - 1)) + deltaMonths;
+    final year = totalMonths ~/ 12;
+    final month = (totalMonths % 12) + 1;
+    return DateTime(year, month, 1);
+  }
+
+  String? _cell(List<Object?> row, int index) {
+    if (index < 0 || index >= row.length) return null;
+    final value = row[index];
+    if (value == null) return null;
+    final text = value.toString().trim();
+    return text.isEmpty ? null : text;
+  }
+
+  double? _toDouble(String? value) {
+    if (value == null || value.isEmpty) return null;
+
+    final cleaned = value
+        .replaceAll(',', '')
+        .replaceAll('₪', '')
+        .replaceAll(r'$', '')
+        .replaceAll('€', '')
+        .trim();
+
+    return double.tryParse(cleaned);
+  }
+
+  String? _normalizeMonthKey(String? value) {
+    if (value == null || value.isEmpty) return null;
+
+    // Google Sheets unformatted date serial (days since 1899-12-30)
+    final serial = double.tryParse(value);
+    if (serial != null && serial > 0) {
+      final dt = DateTime(1899, 12, 30).add(Duration(days: serial.floor()));
+      return '${dt.month.toString().padLeft(2, '0')}/${dt.year}';
+    }
+
+    final slash = RegExp(r'^(\d{1,2})/(\d{4})$').firstMatch(value);
+    if (slash != null) {
+      final month = int.tryParse(slash.group(1)!);
+      final year = int.tryParse(slash.group(2)!);
+      if (month != null && year != null && month >= 1 && month <= 12) {
+        return '${month.toString().padLeft(2, '0')}/$year';
+      }
+    }
+
+    final dash = RegExp(r'^(\d{4})-(\d{1,2})$').firstMatch(value);
+    if (dash != null) {
+      final year = int.tryParse(dash.group(1)!);
+      final month = int.tryParse(dash.group(2)!);
+      if (month != null && year != null && month >= 1 && month <= 12) {
+        return '${month.toString().padLeft(2, '0')}/$year';
+      }
+    }
+
+    return null;
+  }
+
+  String? _extractUrlFromCell(String? formulaOrValue) {
+    if (formulaOrValue == null || formulaOrValue.isEmpty) return null;
+
+    final hyperlink = RegExp(r'HYPERLINK\("([^"]+)"').firstMatch(formulaOrValue);
+    if (hyperlink != null) {
+      final url = hyperlink.group(1)?.trim();
+      return (url != null && url.isNotEmpty) ? url : null;
+    }
+
+    if (formulaOrValue.startsWith('http://') ||
+        formulaOrValue.startsWith('https://')) {
+      return formulaOrValue;
+    }
+
+    return null;
+  }
+
+  String? _buildFallbackReceiptId(
+    String? driveLink,
+    String monthKey,
+    String? merchant,
+  ) {
+    if (driveLink != null && driveLink.isNotEmpty) {
+      final idMatch = RegExp(r'/d/([A-Za-z0-9_-]+)').firstMatch(driveLink) ??
+          RegExp(r'[?&]id=([A-Za-z0-9_-]+)').firstMatch(driveLink);
+      final driveId = idMatch?.group(1);
+      if (driveId != null && driveId.isNotEmpty) {
+        return 'restored_$driveId';
+      }
+    }
+
+    final merchantToken = (merchant ?? '').trim();
+    if (merchantToken.isNotEmpty) {
+      return 'restored_${monthKey.replaceAll('/', '')}_$merchantToken';
+    }
+
+    return null;
+  }
 
   // ────────────────────── Main entry point ──────────────────────
 
