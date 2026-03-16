@@ -212,11 +212,17 @@ All persistent data lives in the user’s own Google account.
 ## 📱 App Screenshots
 
 <p align="center">
-  <img src="screenshots/camera.jpeg" width="250"/>
-  <img src="screenshots/review.jpeg" width="250"/>
+  <img src="screenshots/camera.jpeg" width="260"/>
+  <img src="screenshots/review.jpeg" width="260"/>
 </p>
 
 <p align="center">
-  <img src="screenshots/statistics.jpeg" width="250"/>
-  <img src="screenshots/sheets.jpeg" width="250"/>
+  <img src="screenshots/statistics.jpeg" width="260"/>
+</p>
+
+### 📑 Google Sheets Ledger
+
+<p align="center">
+  <img src="screenshots/sheets-expenses.png" width="350"/>
+  <img src="screenshots/sheets-totals.png" width="350"/>
 </p>
